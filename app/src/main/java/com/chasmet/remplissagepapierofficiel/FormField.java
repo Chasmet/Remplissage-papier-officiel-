@@ -12,14 +12,21 @@ public class FormField {
     public final float width;
     public final float height;
     public final Type type;
+    public final float confidence;
 
     public FormField(int pageIndex, float x, float y, float width, float height, Type type) {
+        this(pageIndex, x, y, width, height, type, 0.75f);
+    }
+
+    public FormField(int pageIndex, float x, float y, float width, float height,
+                     Type type, float confidence) {
         this.pageIndex = pageIndex;
         this.x = clamp01(x);
         this.y = clamp01(y);
         this.width = Math.max(0.001f, Math.min(1f - this.x, width));
         this.height = Math.max(0.001f, Math.min(1f - this.y, height));
         this.type = type == null ? Type.LINE : type;
+        this.confidence = Math.max(0f, Math.min(1f, confidence));
     }
 
     public float centerX() {
