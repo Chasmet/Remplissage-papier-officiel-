@@ -6,6 +6,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.RectF;
+import android.os.SystemClock;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
@@ -58,6 +59,7 @@ public class PdfOverlayView extends View {
     private float downTouchX;
     private float downTouchY;
     private boolean moved;
+    private long suppressTapUntil;
 
     public PdfOverlayView(Context context) {
         super(context);
@@ -80,12 +82,13 @@ public class PdfOverlayView extends View {
             @Override
             public boolean onScaleBegin(ScaleGestureDetector detector) {
                 moved = true;
+                suppressTapUntil = SystemClock.uptimeMillis() + 220L;
                 return bitmap != null;
             }
 
             @Override
             public boolean onScale(ScaleGestureDetector detector) {
-                if (bitmap == null) return false;
+                if (bitmap == null || bitmap.isRecycled()) return false;
                 updateTransform();
 
                 float oldZoom = zoomScale;
@@ -110,6 +113,12 @@ public class PdfOverlayView extends View {
                 notifyZoom();
                 return true;
             }
+
+            @Override
+            public void onScaleEnd(ScaleGestureDetector detector) {
+                suppressTapUntil = SystemClock.uptimeMillis() + 220L;
+                super.onScaleEnd(detector);
+            }
         });
     }
 
@@ -127,6 +136,7 @@ public class PdfOverlayView extends View {
         zoomScale = 1f;
         panX = 0f;
         panY = 0f;
+        moved = false;
         invalidate();
         notifyZoom();
     }
@@ -269,6 +279,7 @@ public class PdfOverlayView extends View {
 
             case MotionEvent.ACTION_POINTER_DOWN:
                 moved = true;
+                suppressTapUntil = SystemClock.uptimeMillis() + 220L;
                 return true;
 
             case MotionEvent.ACTION_MOVE:
@@ -279,8 +290,8 @@ public class PdfOverlayView extends View {
                 float x = event.getX();
                 float y = event.getY();
                 float distance = (float) Math.hypot(x - downTouchX, y - downTouchY);
-                if (zoomScale > 1.001f && (moved || distance > touchSlop)) {
-                    moved = true;
+                if (distance > touchSlop) moved = true;
+                if (zoomScale > 1.001f && moved) {
                     panX += x - lastTouchX;
                     panY += y - lastTouchY;
                     clampPan();
@@ -290,14 +301,23 @@ public class PdfOverlayView extends View {
                 lastTouchY = y;
                 return true;
 
+            case MotionEvent.ACTION_POINTER_UP:
+                moved = true;
+                suppressTapUntil = SystemClock.uptimeMillis() + 220L;
+                return true;
+
             case MotionEvent.ACTION_UP:
-                if (!moved && !scaleDetector.isInProgress()) {
+                if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(false);
+                if (!moved
+                        && !scaleDetector.isInProgress()
+                        && SystemClock.uptimeMillis() >= suppressTapUntil) {
                     performClick();
                     selectAtScreen(event.getX(), event.getY());
                 }
                 return true;
 
             case MotionEvent.ACTION_CANCEL:
+                if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(false);
                 moved = true;
                 return true;
 
@@ -399,6 +419,17 @@ public class PdfOverlayView extends View {
 
     private void notifyZoom() {
         if (zoomListener != null) zoomListener.onZoomChanged(zoomScale);
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        if (bitmap != null && !bitmap.isRecycled()) {
+            bitmap.recycle();
+        }
+        bitmap = null;
+        overlays.clear();
+        detectedFields.clear();
     }
 
     private static float clamp(float value, float min, float max) {
