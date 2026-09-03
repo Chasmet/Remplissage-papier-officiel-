@@ -46,9 +46,23 @@ jobs:
           echo "Version détectée: $VERSION ($VERSION_CODE)"
 
       - name: Compile, tests and lint
+        shell: bash
         run: |
+          set +e
           chmod +x gradlew
           ./gradlew clean testDebugUnitTest lintDebug assembleDebug
+          RESULT=$?
+          if [ "$RESULT" -ne 0 ]; then
+            echo "===== RAPPORT LINT COMPLET ====="
+            REPORT=$(find app/build -type f -name 'lint-results-debug.txt' -o -name 'lint-results*.txt' | head -n 1)
+            if [ -n "$REPORT" ] && [ -f "$REPORT" ]; then
+              cat "$REPORT"
+            else
+              REPORT=$(find app/build -type f -path '*lintReportDebug*' -name '*.txt' | head -n 1)
+              if [ -n "$REPORT" ] && [ -f "$REPORT" ]; then cat "$REPORT"; fi
+            fi
+            exit "$RESULT"
+          fi
 
       - name: Obtain permanent signing key
         shell: bash
