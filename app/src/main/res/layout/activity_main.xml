@@ -125,7 +125,7 @@
             android:layout_marginTop="16dp"
             android:background="@drawable/bg_button_dark"
             android:backgroundTint="@null"
-            android:text="⚙  RÉGLAGES & MISES À JOUR"
+            android:text="⚙  RÉGLAGES &amp; MISES À JOUR"
             android:textColor="#FF8A3D"
             android:textSize="15sp"
             android:textStyle="bold" />
