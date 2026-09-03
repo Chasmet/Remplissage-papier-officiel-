@@ -13,6 +13,7 @@ import java.io.File;
 
 public class SettingsActivity extends Activity {
     private static final String PREFS = "settings";
+    private static final String STATE_PENDING_INSTALL = "pending_install";
 
     private TextView tvUpdateStatus;
     private TextView tvPercent;
@@ -20,12 +21,16 @@ public class SettingsActivity extends Activity {
     private ProgressBar progressUpdate;
     private Button btnDownloadUpdate;
     private Button btnInstallUpdate;
+    private Button btnCheckUpdate;
     private EditText etMcpUrl;
     private EditText etMcpToken;
 
     private UpdateManager.UpdateInfo latestInfo;
     private File downloadedApk;
     private boolean pendingInstallAfterPermission;
+    private boolean checkingUpdate;
+    private boolean downloadingUpdate;
+    private boolean installationOpening;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -39,8 +44,13 @@ public class SettingsActivity extends Activity {
         progressUpdate = findViewById(R.id.progressUpdate);
         btnDownloadUpdate = findViewById(R.id.btnDownloadUpdate);
         btnInstallUpdate = findViewById(R.id.btnInstallUpdate);
+        btnCheckUpdate = findViewById(R.id.btnCheckUpdate);
         etMcpUrl = findViewById(R.id.etMcpUrl);
         etMcpToken = findViewById(R.id.etMcpToken);
+
+        if (savedInstanceState != null) {
+            pendingInstallAfterPermission = savedInstanceState.getBoolean(STATE_PENDING_INSTALL, false);
+        }
 
         tvVersion.setText("Version installée : " + BuildConfig.VERSION_NAME + " (" + BuildConfig.VERSION_CODE + ")");
         loadMcpSettings();
@@ -48,7 +58,7 @@ public class SettingsActivity extends Activity {
         downloadedApk = UpdateManager.getUpdateFile(this);
         validateExistingDownload();
 
-        findViewById(R.id.btnCheckUpdate).setOnClickListener(v -> checkUpdate());
+        btnCheckUpdate.setOnClickListener(v -> checkUpdate());
         btnDownloadUpdate.setOnClickListener(v -> downloadUpdate());
         btnInstallUpdate.setOnClickListener(v -> installUpdate());
         findViewById(R.id.btnSaveMcp).setOnClickListener(v -> saveMcpSettings());
@@ -58,8 +68,15 @@ public class SettingsActivity extends Activity {
     }
 
     @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        outState.putBoolean(STATE_PENDING_INSTALL, pendingInstallAfterPermission);
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
+        installationOpening = false;
         if (pendingInstallAfterPermission && UpdateManager.canInstallPackages(this)) {
             pendingInstallAfterPermission = false;
             tvUpdateStatus.setText("Autorisation accordée. Ouverture de l’installation…");
@@ -76,11 +93,14 @@ public class SettingsActivity extends Activity {
         UpdateManager.ApkValidation validation = UpdateManager.validateDownloadedApk(this, downloadedApk);
         if (validation.valid) {
             btnInstallUpdate.setEnabled(true);
-            tvUpdateStatus.setText("Mise à jour téléchargée et signature vérifiée. Prête à être installée.");
+            tvUpdateStatus.setText("Mise à jour téléchargée, vérifiée et prête à être installée.");
         } else {
             btnInstallUpdate.setEnabled(false);
+            if (!validation.reinstallRequired) {
+                downloadedApk.delete();
+            }
             if (validation.reinstallRequired) {
-                tvUpdateStatus.setText("Ancienne signature détectée. Réinstallation unique nécessaire avant les futures MAJ internes.");
+                tvUpdateStatus.setText("Signature historique différente : cette ancienne installation ne peut pas être remplacée directement.");
             } else {
                 tvUpdateStatus.setText(validation.message);
             }
@@ -88,39 +108,49 @@ public class SettingsActivity extends Activity {
     }
 
     private void checkUpdate() {
+        if (checkingUpdate || downloadingUpdate) return;
+        checkingUpdate = true;
+        refreshUpdateButtons();
         tvUpdateStatus.setText("Vérification en cours…");
-        btnDownloadUpdate.setEnabled(false);
+
         UpdateManager.checkLatest((info, error) -> runOnUiThread(() -> {
+            checkingUpdate = false;
+            if (isFinishing() || isDestroyed()) return;
             if (error != null) {
-                tvUpdateStatus.setText("Vérification impossible : " + error.getMessage());
+                AppLog.write(this, "checkUpdate", error);
+                tvUpdateStatus.setText("Vérification impossible : " + safeMessage(error));
+                refreshUpdateButtons();
                 return;
             }
             latestInfo = info;
-            if (UpdateManager.isNewer(info.version, BuildConfig.VERSION_NAME)) {
-                tvUpdateStatus.setText("Nouvelle version disponible : " + info.version + " • APK signé vérifié avant installation");
-                btnDownloadUpdate.setEnabled(true);
+            if (info != null && UpdateManager.isNewer(info.version, BuildConfig.VERSION_NAME)) {
+                tvUpdateStatus.setText("Nouvelle version disponible : " + info.version);
             } else {
                 tvUpdateStatus.setText("L’application est à jour (" + BuildConfig.VERSION_NAME + ").");
             }
+            refreshUpdateButtons();
         }));
     }
 
     private void downloadUpdate() {
-        if (latestInfo == null || latestInfo.apkUrl == null) {
+        if (downloadingUpdate || checkingUpdate) return;
+        if (latestInfo == null || latestInfo.apkUrl == null
+                || !UpdateManager.isNewer(latestInfo.version, BuildConfig.VERSION_NAME)) {
             Toast.makeText(this, "Vérifiez d’abord les mises à jour", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        btnDownloadUpdate.setEnabled(false);
-        btnInstallUpdate.setEnabled(false);
+        downloadingUpdate = true;
         progressUpdate.setProgress(0);
         tvPercent.setText("0 %");
         tvUpdateStatus.setText("Téléchargement et vérification en cours…");
+        refreshUpdateButtons();
 
         UpdateManager.download(this, latestInfo.apkUrl, latestInfo.apkDigest, new UpdateManager.DownloadCallback() {
             @Override
             public void onProgress(int percent) {
                 runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
                     progressUpdate.setProgress(percent);
                     tvPercent.setText(percent + " %");
                 });
@@ -129,60 +159,83 @@ public class SettingsActivity extends Activity {
             @Override
             public void onComplete(File file) {
                 runOnUiThread(() -> {
+                    downloadingUpdate = false;
+                    if (isFinishing() || isDestroyed()) return;
                     downloadedApk = file;
                     progressUpdate.setProgress(100);
                     tvPercent.setText("100 %");
 
                     UpdateManager.ApkValidation validation = UpdateManager.validateDownloadedApk(SettingsActivity.this, file);
                     if (validation.valid) {
-                        tvUpdateStatus.setText("Téléchargement terminé. Signature compatible : installation autorisée.");
-                        btnInstallUpdate.setEnabled(true);
+                        tvUpdateStatus.setText("Téléchargement terminé. APK contrôlé et compatible.");
                     } else if (validation.reinstallRequired) {
-                        tvUpdateStatus.setText("Cette APK utilise la nouvelle signature permanente. L’ancienne application doit être désinstallée une seule fois avant de l’installer.");
-                        btnInstallUpdate.setEnabled(false);
+                        tvUpdateStatus.setText("APK valide mais signature différente de l’ancienne installation.");
                     } else {
                         tvUpdateStatus.setText("APK refusé : " + validation.message);
-                        btnInstallUpdate.setEnabled(false);
+                        file.delete();
                     }
-                    btnDownloadUpdate.setEnabled(true);
+                    refreshUpdateButtons();
                 });
             }
 
             @Override
             public void onError(Exception error) {
                 runOnUiThread(() -> {
-                    tvUpdateStatus.setText("Erreur de téléchargement/vérification : " + error.getMessage());
-                    btnDownloadUpdate.setEnabled(true);
-                    btnInstallUpdate.setEnabled(false);
+                    downloadingUpdate = false;
+                    AppLog.write(SettingsActivity.this, "downloadUpdate", error);
+                    if (isFinishing() || isDestroyed()) return;
+                    tvUpdateStatus.setText("Erreur téléchargement : " + safeMessage(error));
+                    refreshUpdateButtons();
                 });
             }
         });
     }
 
     private void installUpdate() {
+        if (installationOpening || downloadingUpdate) return;
         try {
             if (downloadedApk == null) downloadedApk = UpdateManager.getUpdateFile(this);
             UpdateManager.ApkValidation validation = UpdateManager.validateDownloadedApk(this, downloadedApk);
             if (!validation.valid) {
                 if (validation.reinstallRequired) {
-                    tvUpdateStatus.setText("Installation bloquée : ancienne signature Android. Réinstallation unique nécessaire pour passer à la clé permanente.");
+                    tvUpdateStatus.setText("Android bloque le remplacement car l’ancienne version a une autre signature.");
                 } else {
                     tvUpdateStatus.setText("Installation bloquée : " + validation.message);
                 }
+                refreshUpdateButtons();
                 return;
             }
 
+            installationOpening = true;
             UpdateManager.InstallResult result = UpdateManager.install(this, downloadedApk);
             if (result == UpdateManager.InstallResult.PERMISSION_REQUIRED) {
+                installationOpening = false;
                 pendingInstallAfterPermission = true;
-                tvUpdateStatus.setText("Autorisez ‘Installer des applications inconnues’. L’installation reprendra automatiquement au retour.");
+                tvUpdateStatus.setText("Autorisez l’installation depuis cette application. La procédure reprendra automatiquement.");
             } else {
                 tvUpdateStatus.setText("Installation Android ouverte. Validez la mise à jour.");
             }
         } catch (Exception e) {
-            tvUpdateStatus.setText("Installation impossible : " + e.getMessage());
-            Toast.makeText(this, "Installation impossible : " + e.getMessage(), Toast.LENGTH_LONG).show();
+            installationOpening = false;
+            AppLog.write(this, "installUpdate", e);
+            tvUpdateStatus.setText("Installation impossible : " + safeMessage(e));
+            Toast.makeText(this, "Installation impossible : " + safeMessage(e), Toast.LENGTH_LONG).show();
         }
+    }
+
+    private void refreshUpdateButtons() {
+        boolean newer = latestInfo != null
+                && latestInfo.apkUrl != null
+                && UpdateManager.isNewer(latestInfo.version, BuildConfig.VERSION_NAME);
+        btnCheckUpdate.setEnabled(!checkingUpdate && !downloadingUpdate);
+        btnDownloadUpdate.setEnabled(!checkingUpdate && !downloadingUpdate && newer);
+
+        File apk = downloadedApk != null ? downloadedApk : UpdateManager.getUpdateFile(this);
+        boolean installable = false;
+        if (!downloadingUpdate && apk.exists() && apk.length() > 0) {
+            installable = UpdateManager.validateDownloadedApk(this, apk).valid;
+        }
+        btnInstallUpdate.setEnabled(installable && !installationOpening);
     }
 
     private void loadMcpSettings() {
@@ -216,7 +269,16 @@ public class SettingsActivity extends Activity {
             return;
         }
         tvMcpStatus.setText("Test MCP en cours…");
-        McpClient.testConnection(url, token,
-                (success, message) -> runOnUiThread(() -> tvMcpStatus.setText(message)));
+        McpClient.testConnection(url, token, (success, message) -> runOnUiThread(() -> {
+            if (!isFinishing() && !isDestroyed()) tvMcpStatus.setText(message);
+        }));
+    }
+
+    private static String safeMessage(Throwable error) {
+        if (error == null) return "erreur inconnue";
+        String message = error.getMessage();
+        return message == null || message.trim().isEmpty()
+                ? error.getClass().getSimpleName()
+                : message;
     }
 }
