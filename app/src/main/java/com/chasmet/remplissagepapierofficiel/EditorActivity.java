@@ -31,12 +31,19 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class EditorActivity extends Activity {
     private static final int REQ_PICK_PDF = 100;
     private static final int REQ_CREATE_PDF = 101;
     private static final int REQ_CREATE_PNG = 102;
     private static final String DRAFT_PREFS = "editor_drafts";
+    private static final String STATE_URI = "source_uri";
+    private static final String STATE_PAGE = "page_index";
+    private static final String STATE_TEXT = "overlay_text";
+    private static final String STATE_TEXT_SIZE = "text_size";
 
     private PdfOverlayView pdfView;
     private TextView tvPage;
@@ -45,6 +52,10 @@ public class EditorActivity extends Activity {
     private TextView tvTextSize;
     private EditText etOverlayText;
     private Button btnResetZoom;
+    private Button btnChoosePdf;
+    private Button btnDetectFields;
+    private Button btnExportPdf;
+    private Button btnExportPng;
 
     private Uri sourceUri;
     private ParcelFileDescriptor sourceDescriptor;
@@ -55,8 +66,26 @@ public class EditorActivity extends Activity {
     private float currentTextSize = 14f;
     private String draftKey;
 
+    private final Object rendererLock = new Object();
+    private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final AtomicInteger renderGeneration = new AtomicInteger();
+    private volatile boolean destroyed;
+    private volatile boolean exportBusy;
+
     private final List<TextOverlay> overlays = new ArrayList<>();
     private final Map<Integer, List<FormField>> detectedFieldsByPage = new HashMap<>();
+
+    private static class RenderedPage {
+        final Bitmap bitmap;
+        final int pageWidth;
+        final int pageHeight;
+
+        RenderedPage(Bitmap bitmap, int pageWidth, int pageHeight) {
+            this.bitmap = bitmap;
+            this.pageWidth = pageWidth;
+            this.pageHeight = pageHeight;
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -70,6 +99,10 @@ public class EditorActivity extends Activity {
         tvTextSize = findViewById(R.id.tvTextSize);
         etOverlayText = findViewById(R.id.etOverlayText);
         btnResetZoom = findViewById(R.id.btnResetZoom);
+        btnChoosePdf = findViewById(R.id.btnChoosePdf);
+        btnDetectFields = findViewById(R.id.btnDetectFields);
+        btnExportPdf = findViewById(R.id.btnExportPdf);
+        btnExportPng = findViewById(R.id.btnExportPng);
 
         pdfView.setOnPositionSelectedListener((x, y) -> {
             selectedX = x;
@@ -88,10 +121,10 @@ public class EditorActivity extends Activity {
         pdfView.setOnZoomChangedListener(zoom ->
                 btnResetZoom.setText(Math.round(zoom * 100f) + "%"));
 
-        findViewById(R.id.btnChoosePdf).setOnClickListener(v -> choosePdf());
+        btnChoosePdf.setOnClickListener(v -> choosePdf());
         findViewById(R.id.btnPrevPage).setOnClickListener(v -> changePage(-1));
         findViewById(R.id.btnNextPage).setOnClickListener(v -> changePage(1));
-        findViewById(R.id.btnDetectFields).setOnClickListener(v -> redetectCurrentPage());
+        btnDetectFields.setOnClickListener(v -> redetectCurrentPage());
         findViewById(R.id.btnPrevField).setOnClickListener(v -> pdfView.selectPreviousField());
         findViewById(R.id.btnNextField).setOnClickListener(v -> pdfView.selectNextField());
         btnResetZoom.setOnClickListener(v -> pdfView.resetZoom());
@@ -109,13 +142,29 @@ public class EditorActivity extends Activity {
         findViewById(R.id.btnTextSmaller).setOnClickListener(v -> changeTextSize(-1f));
         findViewById(R.id.btnTextLarger).setOnClickListener(v -> changeTextSize(1f));
         findViewById(R.id.btnClearPage).setOnClickListener(v -> clearCurrentPage());
-        findViewById(R.id.btnExportPdf).setOnClickListener(v -> requestPdfExport());
-        findViewById(R.id.btnExportPng).setOnClickListener(v -> requestPngExport());
+        btnExportPdf.setOnClickListener(v -> requestPdfExport());
+        btnExportPng.setOnClickListener(v -> requestPngExport());
 
+        if (savedInstanceState != null) {
+            currentTextSize = savedInstanceState.getFloat(STATE_TEXT_SIZE, 14f);
+            etOverlayText.setText(savedInstanceState.getString(STATE_TEXT, ""));
+        }
         updateTextSizeLabel();
+
+        if (savedInstanceState != null) {
+            String savedUri = savedInstanceState.getString(STATE_URI, "");
+            if (!savedUri.isEmpty()) {
+                int savedPage = savedInstanceState.getInt(STATE_PAGE, 0);
+                openPdf(Uri.parse(savedUri), null, savedPage);
+            }
+        }
     }
 
     private void choosePdf() {
+        if (exportBusy) {
+            Toast.makeText(this, "Export en cours, attendez sa fin", Toast.LENGTH_SHORT).show();
+            return;
+        }
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("application/pdf");
@@ -124,99 +173,227 @@ public class EditorActivity extends Activity {
     }
 
     private void openPdf(Uri uri, Intent data) {
+        openPdf(uri, data, -1);
+    }
+
+    private void openPdf(Uri uri, Intent data, int requestedPage) {
         closePdf();
         try {
             if (data != null) {
                 int flags = data.getFlags()
                         & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-                try {
-                    getContentResolver().takePersistableUriPermission(uri, flags);
-                } catch (SecurityException ignored) {
+                if (flags != 0) {
+                    try {
+                        getContentResolver().takePersistableUriPermission(uri, flags);
+                    } catch (SecurityException ignored) {
+                    }
                 }
             }
 
-            sourceDescriptor = getContentResolver().openFileDescriptor(uri, "r");
-            if (sourceDescriptor == null) throw new IOException("Document inaccessible");
-            renderer = new PdfRenderer(sourceDescriptor);
+            ParcelFileDescriptor descriptor = getContentResolver().openFileDescriptor(uri, "r");
+            if (descriptor == null) throw new IOException("Document inaccessible");
+            PdfRenderer openedRenderer = new PdfRenderer(descriptor);
+            if (openedRenderer.getPageCount() <= 0) {
+                openedRenderer.close();
+                descriptor.close();
+                throw new IOException("PDF vide");
+            }
+
+            synchronized (rendererLock) {
+                sourceDescriptor = descriptor;
+                renderer = openedRenderer;
+            }
             sourceUri = uri;
             draftKey = buildDraftKey(uri);
             pageIndex = 0;
             overlays.clear();
-            detectedFieldsByPage.clear();
-            loadDraft();
-            if (renderer.getPageCount() > 0) {
-                pageIndex = Math.max(0, Math.min(pageIndex, renderer.getPageCount() - 1));
+            synchronized (detectedFieldsByPage) {
+                detectedFieldsByPage.clear();
             }
+            loadDraft();
+            int count = getPageCountSafe();
+            if (requestedPage >= 0) pageIndex = requestedPage;
+            pageIndex = Math.max(0, Math.min(pageIndex, Math.max(0, count - 1)));
             renderCurrentPage();
         } catch (Exception e) {
+            AppLog.write(this, "openPdf", e);
             closePdf();
-            Toast.makeText(this, "Impossible d’ouvrir ce PDF : " + e.getMessage(), Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Impossible d’ouvrir ce PDF : " + safeMessage(e), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private int getPageCountSafe() {
+        synchronized (rendererLock) {
+            try {
+                return renderer == null ? 0 : renderer.getPageCount();
+            } catch (Exception e) {
+                AppLog.write(this, "getPageCount", e);
+                return 0;
+            }
         }
     }
 
     private void changePage(int delta) {
-        if (renderer == null) return;
+        if (exportBusy) return;
+        int count = getPageCountSafe();
+        if (count <= 0) return;
         int next = pageIndex + delta;
-        if (next < 0 || next >= renderer.getPageCount()) return;
+        if (next < 0 || next >= count) return;
         pageIndex = next;
-        saveDraft();
+        saveDraft(false);
         renderCurrentPage();
     }
 
     private void renderCurrentPage() {
-        if (renderer == null) return;
-        PdfRenderer.Page page = null;
-        try {
-            page = renderer.openPage(pageIndex);
+        final int requestedPage = pageIndex;
+        final int generation = renderGeneration.incrementAndGet();
+        if (getPageCountSafe() <= 0) return;
 
-            // Large display raster so pinch-to-zoom stays sharp on official forms.
-            float factor = Math.min(3f, 1800f / Math.max(1f, page.getWidth()));
-            factor = Math.max(1.5f, factor);
-            int width = Math.max(1, Math.round(page.getWidth() * factor));
-            int height = Math.max(1, Math.round(page.getHeight() * factor));
-            Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-            bitmap.eraseColor(Color.WHITE);
-            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+        tvFieldStatus.setText("Chargement…");
+        btnDetectFields.setEnabled(false);
 
-            List<FormField> fields = detectedFieldsByPage.get(pageIndex);
-            if (fields == null) {
-                fields = FormFieldDetector.detect(bitmap, pageIndex);
-                detectedFieldsByPage.put(pageIndex, fields);
+        worker.execute(() -> {
+            Bitmap bitmap = null;
+            try {
+                RenderedPage rendered = renderPage(requestedPage, false);
+                bitmap = rendered.bitmap;
+                if (generation != renderGeneration.get() || destroyed) {
+                    recycle(bitmap);
+                    return;
+                }
+
+                List<FormField> fields;
+                synchronized (detectedFieldsByPage) {
+                    List<FormField> cached = detectedFieldsByPage.get(requestedPage);
+                    fields = cached == null ? null : new ArrayList<>(cached);
+                }
+
+                if (fields == null) {
+                    try {
+                        fields = FormFieldDetector.detect(bitmap, requestedPage);
+                    } catch (OutOfMemoryError oom) {
+                        AppLog.write(this, "fieldDetectionOOM page=" + requestedPage, oom);
+                        fields = new ArrayList<>();
+                    } catch (Exception detectionError) {
+                        AppLog.write(this, "fieldDetection page=" + requestedPage, detectionError);
+                        fields = new ArrayList<>();
+                    }
+                    synchronized (detectedFieldsByPage) {
+                        detectedFieldsByPage.put(requestedPage, new ArrayList<>(fields));
+                    }
+                }
+
+                if (generation != renderGeneration.get() || destroyed) {
+                    recycle(bitmap);
+                    return;
+                }
+
+                Bitmap finalBitmap = bitmap;
+                List<FormField> finalFields = fields;
+                bitmap = null; // Ownership moves to PdfOverlayView on the UI thread.
+                runOnUiThread(() -> {
+                    if (destroyed || generation != renderGeneration.get() || requestedPage != pageIndex) {
+                        recycle(finalBitmap);
+                        return;
+                    }
+                    pdfView.setPage(finalBitmap, currentPageOverlays());
+                    pdfView.setDetectedFields(finalFields);
+                    int count = getPageCountSafe();
+                    tvPage.setText("Page " + (requestedPage + 1) + " / " + count);
+                    updateFieldStatus(finalFields.size());
+                    btnDetectFields.setEnabled(true);
+
+                    if (!finalFields.isEmpty()) {
+                        pdfView.selectNextField();
+                    } else {
+                        selectedX = 0.10f;
+                        selectedY = 0.10f;
+                        tvPosition.setText("Aucune ligne détectée • touchez librement le document pour écrire.");
+                    }
+                });
+            } catch (OutOfMemoryError oom) {
+                AppLog.write(this, "renderPageOOM page=" + requestedPage, oom);
+                recycle(bitmap);
+                runOnUiThread(() -> {
+                    if (!destroyed && generation == renderGeneration.get()) {
+                        btnDetectFields.setEnabled(true);
+                        tvFieldStatus.setText("Mémoire limitée");
+                        Toast.makeText(this,
+                                "Page très lourde : affichage impossible avec la mémoire disponible.",
+                                Toast.LENGTH_LONG).show();
+                    }
+                });
+            } catch (Exception e) {
+                AppLog.write(this, "renderPage page=" + requestedPage, e);
+                recycle(bitmap);
+                runOnUiThread(() -> {
+                    if (!destroyed && generation == renderGeneration.get()) {
+                        btnDetectFields.setEnabled(true);
+                        tvFieldStatus.setText("Erreur d’affichage");
+                        Toast.makeText(this, "Erreur d’affichage : " + safeMessage(e), Toast.LENGTH_LONG).show();
+                    }
+                });
             }
+        });
+    }
 
-            pdfView.setPage(bitmap, currentPageOverlays());
-            pdfView.setDetectedFields(fields);
-            tvPage.setText("Page " + (pageIndex + 1) + " / " + renderer.getPageCount());
-            updateFieldStatus(fields.size());
+    private RenderedPage renderPage(int index, boolean printMode) throws Exception {
+        synchronized (rendererLock) {
+            if (renderer == null) throw new IOException("PDF fermé");
+            if (index < 0 || index >= renderer.getPageCount()) throw new IOException("Page invalide");
+            PdfRenderer.Page page = renderer.openPage(index);
+            try {
+                int pageWidth = page.getWidth();
+                int pageHeight = page.getHeight();
+                float desired = printMode ? 2.15f : 2.45f;
+                float maxDimension = printMode ? 1800f : 1650f;
+                float dimensionFactor = maxDimension / Math.max(1f, Math.max(pageWidth, pageHeight));
+                float target = Math.max(1f, Math.min(desired, dimensionFactor));
 
-            if (!fields.isEmpty()) {
-                pdfView.selectNextField();
-            } else {
-                selectedX = 0.10f;
-                selectedY = 0.10f;
-                tvPosition.setText("Aucune ligne détectée • touchez librement le document pour écrire.");
+                long maxMemory = Runtime.getRuntime().maxMemory();
+                long maxPixels = Math.max(1_800_000L, Math.min(7_000_000L, maxMemory / 18L));
+                double pixelsAtOne = (double) pageWidth * (double) pageHeight;
+                if (pixelsAtOne > 0) {
+                    float memoryFactor = (float) Math.sqrt(maxPixels / pixelsAtOne);
+                    target = Math.min(target, Math.max(1f, memoryFactor));
+                }
+
+                float[] attempts = new float[]{target, Math.min(target, 1.60f), 1.20f, 1.0f};
+                OutOfMemoryError lastOom = null;
+                for (float scale : attempts) {
+                    Bitmap bitmap = null;
+                    try {
+                        int width = Math.max(1, Math.round(pageWidth * scale));
+                        int height = Math.max(1, Math.round(pageHeight * scale));
+                        bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+                        bitmap.eraseColor(Color.WHITE);
+                        page.render(bitmap, null, null,
+                                printMode ? PdfRenderer.Page.RENDER_MODE_FOR_PRINT : PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+                        return new RenderedPage(bitmap, pageWidth, pageHeight);
+                    } catch (OutOfMemoryError oom) {
+                        lastOom = oom;
+                        recycle(bitmap);
+                        System.gc();
+                    }
+                }
+                if (lastOom != null) throw lastOom;
+                throw new IOException("Impossible de rendre la page");
+            } finally {
+                page.close();
             }
-        } catch (OutOfMemoryError error) {
-            Toast.makeText(this,
-                    "Mémoire insuffisante pour cette page. Réessayez après avoir fermé d’autres applications.",
-                    Toast.LENGTH_LONG).show();
-        } catch (Exception e) {
-            Toast.makeText(this, "Erreur d’affichage : " + e.getMessage(), Toast.LENGTH_LONG).show();
-        } finally {
-            if (page != null) page.close();
         }
     }
 
     private void redetectCurrentPage() {
-        if (renderer == null) {
+        if (getPageCountSafe() <= 0) {
             Toast.makeText(this, "Choisissez d’abord un PDF", Toast.LENGTH_SHORT).show();
             return;
         }
-        detectedFieldsByPage.remove(pageIndex);
+        synchronized (detectedFieldsByPage) {
+            detectedFieldsByPage.remove(pageIndex);
+        }
         tvFieldStatus.setText("Analyse…");
         renderCurrentPage();
-        int count = pdfView.getDetectedFieldCount();
-        Toast.makeText(this, count + " zone(s) à remplir détectée(s)", Toast.LENGTH_SHORT).show();
     }
 
     private void updateFieldStatus(int count) {
@@ -236,7 +413,7 @@ public class EditorActivity extends Activity {
     }
 
     private void addText() {
-        if (renderer == null) {
+        if (getPageCountSafe() <= 0) {
             Toast.makeText(this, "Choisissez d’abord un PDF", Toast.LENGTH_SHORT).show();
             return;
         }
@@ -249,7 +426,7 @@ public class EditorActivity extends Activity {
         overlays.add(new TextOverlay(pageIndex, selectedX, selectedY, text, currentTextSize));
         pdfView.setOverlays(currentPageOverlays());
         etOverlayText.setText("");
-        saveDraft();
+        saveDraft(false);
 
         if (pdfView.getDetectedFieldCount() > 0) {
             pdfView.selectNextField();
@@ -261,7 +438,7 @@ public class EditorActivity extends Activity {
             if (overlays.get(i).pageIndex == pageIndex) {
                 overlays.remove(i);
                 pdfView.setOverlays(currentPageOverlays());
-                saveDraft();
+                saveDraft(false);
                 Toast.makeText(this, "Dernier ajout annulé", Toast.LENGTH_SHORT).show();
                 return;
             }
@@ -320,7 +497,7 @@ public class EditorActivity extends Activity {
             }
         }
         pdfView.setOverlays(currentPageOverlays());
-        if (changed) saveDraft();
+        if (changed) saveDraft(false);
     }
 
     private String buildDraftKey(Uri uri) {
@@ -330,31 +507,45 @@ public class EditorActivity extends Activity {
     private void loadDraft() {
         if (draftKey == null) return;
         SharedPreferences prefs = getSharedPreferences(DRAFT_PREFS, MODE_PRIVATE);
-        String json = prefs.getString(draftKey, null);
         pageIndex = prefs.getInt(draftKey + "_page", 0);
-        if (json == null || json.isEmpty()) return;
+        String primary = prefs.getString(draftKey, null);
+        String backup = prefs.getString(draftKey + "_backup", null);
 
-        try {
-            JSONArray array = new JSONArray(json);
-            for (int i = 0; i < array.length(); i++) {
-                JSONObject item = array.getJSONObject(i);
-                overlays.add(new TextOverlay(
-                        item.optInt("page", 0),
-                        (float) item.optDouble("x", 0.1),
-                        (float) item.optDouble("y", 0.1),
-                        item.optString("text", ""),
-                        (float) item.optDouble("size", 14.0)
-                ));
-            }
-            if (!overlays.isEmpty()) {
-                Toast.makeText(this, "Brouillon précédent restauré", Toast.LENGTH_SHORT).show();
-            }
-        } catch (Exception ignored) {
-            // A damaged draft must never prevent opening the source PDF.
+        if (!restoreDraftJson(primary)) {
+            restoreDraftJson(backup);
+        }
+        if (!overlays.isEmpty()) {
+            Toast.makeText(this, "Brouillon précédent restauré", Toast.LENGTH_SHORT).show();
         }
     }
 
-    private void saveDraft() {
+    private boolean restoreDraftJson(String json) {
+        if (json == null || json.isEmpty()) return false;
+        try {
+            JSONArray array = new JSONArray(json);
+            List<TextOverlay> restored = new ArrayList<>();
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject item = array.getJSONObject(i);
+                String text = item.optString("text", "");
+                if (text.length() > 5000) continue;
+                restored.add(new TextOverlay(
+                        Math.max(0, item.optInt("page", 0)),
+                        clamp01((float) item.optDouble("x", 0.1)),
+                        clamp01((float) item.optDouble("y", 0.1)),
+                        text,
+                        Math.max(9f, Math.min(28f, (float) item.optDouble("size", 14.0)))
+                ));
+            }
+            overlays.clear();
+            overlays.addAll(restored);
+            return true;
+        } catch (Exception e) {
+            AppLog.write(this, "restoreDraft", e);
+            return false;
+        }
+    }
+
+    private void saveDraft(boolean immediate) {
         if (draftKey == null) return;
         try {
             JSONArray array = new JSONArray();
@@ -367,20 +558,31 @@ public class EditorActivity extends Activity {
                 item.put("size", overlay.textSize);
                 array.put(item);
             }
-            getSharedPreferences(DRAFT_PREFS, MODE_PRIVATE)
-                    .edit()
-                    .putString(draftKey, array.toString())
-                    .putInt(draftKey + "_page", pageIndex)
-                    .apply();
-        } catch (Exception ignored) {
+
+            SharedPreferences prefs = getSharedPreferences(DRAFT_PREFS, MODE_PRIVATE);
+            String previous = prefs.getString(draftKey, null);
+            SharedPreferences.Editor edit = prefs.edit();
+            if (previous != null && !previous.isEmpty()) {
+                edit.putString(draftKey + "_backup", previous);
+            }
+            edit.putString(draftKey, array.toString())
+                    .putInt(draftKey + "_page", pageIndex);
+            if (immediate) {
+                edit.commit();
+            } else {
+                edit.apply();
+            }
+        } catch (Exception e) {
+            AppLog.write(this, "saveDraft", e);
         }
     }
 
     private void requestPdfExport() {
-        if (renderer == null) {
+        if (getPageCountSafe() <= 0) {
             Toast.makeText(this, "Aucun PDF ouvert", Toast.LENGTH_SHORT).show();
             return;
         }
+        if (exportBusy) return;
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("application/pdf");
@@ -389,10 +591,11 @@ public class EditorActivity extends Activity {
     }
 
     private void requestPngExport() {
-        if (renderer == null) {
+        if (getPageCountSafe() <= 0) {
             Toast.makeText(this, "Aucun PDF ouvert", Toast.LENGTH_SHORT).show();
             return;
         }
+        if (exportBusy) return;
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("image/png");
@@ -401,87 +604,136 @@ public class EditorActivity extends Activity {
     }
 
     private void exportPdf(Uri target) {
-        PdfDocument out = new PdfDocument();
-        Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        textPaint.setColor(Color.BLACK);
-        Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        if (!beginExport("Export PDF en cours…")) return;
+        final List<TextOverlay> overlaySnapshot = new ArrayList<>(overlays);
+        worker.execute(() -> {
+            PdfDocument out = new PdfDocument();
+            Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            textPaint.setColor(Color.BLACK);
+            Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+            try {
+                int count = getPageCountSafe();
+                if (count <= 0) throw new IOException("PDF source fermé");
 
-        try {
-            for (int i = 0; i < renderer.getPageCount(); i++) {
-                PdfRenderer.Page src = renderer.openPage(i);
-                int pageWidth = src.getWidth();
-                int pageHeight = src.getHeight();
-                float renderScale = Math.min(3f, Math.max(2f, 1800f / Math.max(1f, pageWidth)));
-                int bitmapWidth = Math.max(1, Math.round(pageWidth * renderScale));
-                int bitmapHeight = Math.max(1, Math.round(pageHeight * renderScale));
-                Bitmap bitmap = Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888);
-                bitmap.eraseColor(Color.WHITE);
-                src.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT);
-                src.close();
+                for (int i = 0; i < count; i++) {
+                    RenderedPage rendered = renderPage(i, true);
+                    Bitmap bitmap = rendered.bitmap;
+                    PdfDocument.Page dest = null;
+                    try {
+                        PdfDocument.PageInfo info = new PdfDocument.PageInfo.Builder(
+                                rendered.pageWidth, rendered.pageHeight, i + 1).create();
+                        dest = out.startPage(info);
+                        Canvas canvas = dest.getCanvas();
+                        canvas.drawBitmap(bitmap, null,
+                                new RectF(0f, 0f, rendered.pageWidth, rendered.pageHeight), bitmapPaint);
 
-                PdfDocument.PageInfo info = new PdfDocument.PageInfo.Builder(pageWidth, pageHeight, i + 1).create();
-                PdfDocument.Page dest = out.startPage(info);
-                Canvas canvas = dest.getCanvas();
-                canvas.drawBitmap(bitmap, null,
-                        new RectF(0f, 0f, pageWidth, pageHeight), bitmapPaint);
-
-                for (TextOverlay overlay : overlays) {
-                    if (overlay.pageIndex != i) continue;
-                    textPaint.setTextSize(overlay.textSize);
-                    canvas.drawText(overlay.text,
-                            overlay.x * pageWidth,
-                            overlay.y * pageHeight,
-                            textPaint);
+                        for (TextOverlay overlay : overlaySnapshot) {
+                            if (overlay.pageIndex != i) continue;
+                            textPaint.setTextSize(overlay.textSize);
+                            canvas.drawText(overlay.text,
+                                    overlay.x * rendered.pageWidth,
+                                    overlay.y * rendered.pageHeight,
+                                    textPaint);
+                        }
+                        out.finishPage(dest);
+                        dest = null;
+                    } finally {
+                        recycle(bitmap);
+                        if (dest != null) {
+                            try {
+                                out.finishPage(dest);
+                            } catch (Exception ignored) {
+                            }
+                        }
+                    }
                 }
-                out.finishPage(dest);
-                bitmap.recycle();
-            }
 
-            try (OutputStream stream = getContentResolver().openOutputStream(target, "w")) {
-                if (stream == null) throw new IOException("Destination inaccessible");
-                out.writeTo(stream);
+                try (OutputStream stream = getContentResolver().openOutputStream(target, "w")) {
+                    if (stream == null) throw new IOException("Destination inaccessible");
+                    out.writeTo(stream);
+                    stream.flush();
+                }
+                finishExport(true, "PDF rempli enregistré");
+            } catch (OutOfMemoryError oom) {
+                AppLog.write(this, "exportPdfOOM", oom);
+                finishExport(false, "Mémoire insuffisante pendant l’export PDF");
+            } catch (Exception e) {
+                AppLog.write(this, "exportPdf", e);
+                finishExport(false, "Erreur export PDF : " + safeMessage(e));
+            } finally {
+                try {
+                    out.close();
+                } catch (Exception ignored) {
+                }
             }
-            Toast.makeText(this, "PDF rempli enregistré en haute qualité", Toast.LENGTH_LONG).show();
-        } catch (Exception e) {
-            Toast.makeText(this, "Erreur export PDF : " + e.getMessage(), Toast.LENGTH_LONG).show();
-        } finally {
-            out.close();
-        }
+        });
     }
 
     private void exportCurrentPagePng(Uri target) {
-        PdfRenderer.Page page = null;
-        Bitmap bitmap = null;
-        try {
-            page = renderer.openPage(pageIndex);
-            int pageWidth = page.getWidth();
-            int pageHeight = page.getHeight();
-            float scale = Math.min(3f, Math.max(2f, 1800f / Math.max(1f, pageWidth)));
-            int width = Math.max(1, Math.round(pageWidth * scale));
-            int height = Math.max(1, Math.round(pageHeight * scale));
-            bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-            bitmap.eraseColor(Color.WHITE);
-            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT);
+        if (!beginExport("Export PNG en cours…")) return;
+        final int exportPage = pageIndex;
+        final List<TextOverlay> overlaySnapshot = new ArrayList<>(currentPageOverlays());
+        worker.execute(() -> {
+            Bitmap bitmap = null;
+            try {
+                RenderedPage rendered = renderPage(exportPage, true);
+                bitmap = rendered.bitmap;
+                Canvas canvas = new Canvas(bitmap);
+                Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                textPaint.setColor(Color.BLACK);
+                float scaleX = bitmap.getWidth() / (float) Math.max(1, rendered.pageWidth);
+                float scaleY = bitmap.getHeight() / (float) Math.max(1, rendered.pageHeight);
+                float textScale = Math.min(scaleX, scaleY);
 
-            Canvas canvas = new Canvas(bitmap);
-            Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            textPaint.setColor(Color.BLACK);
-            for (TextOverlay overlay : currentPageOverlays()) {
-                textPaint.setTextSize(overlay.textSize * scale);
-                canvas.drawText(overlay.text, overlay.x * width, overlay.y * height, textPaint);
-            }
+                for (TextOverlay overlay : overlaySnapshot) {
+                    textPaint.setTextSize(overlay.textSize * textScale);
+                    canvas.drawText(overlay.text,
+                            overlay.x * bitmap.getWidth(),
+                            overlay.y * bitmap.getHeight(), textPaint);
+                }
 
-            try (OutputStream stream = getContentResolver().openOutputStream(target, "w")) {
-                if (stream == null) throw new IOException("Destination inaccessible");
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream);
+                try (OutputStream stream = getContentResolver().openOutputStream(target, "w")) {
+                    if (stream == null) throw new IOException("Destination inaccessible");
+                    if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)) {
+                        throw new IOException("Encodage PNG impossible");
+                    }
+                    stream.flush();
+                }
+                finishExport(true, "PNG enregistré");
+            } catch (OutOfMemoryError oom) {
+                AppLog.write(this, "exportPngOOM", oom);
+                finishExport(false, "Mémoire insuffisante pendant l’export PNG");
+            } catch (Exception e) {
+                AppLog.write(this, "exportPng", e);
+                finishExport(false, "Erreur export PNG : " + safeMessage(e));
+            } finally {
+                recycle(bitmap);
             }
-            Toast.makeText(this, "PNG haute qualité enregistré", Toast.LENGTH_LONG).show();
-        } catch (Exception e) {
-            Toast.makeText(this, "Erreur export PNG : " + e.getMessage(), Toast.LENGTH_LONG).show();
-        } finally {
-            if (page != null) page.close();
-            if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
+        });
+    }
+
+    private boolean beginExport(String message) {
+        if (exportBusy) {
+            Toast.makeText(this, "Un export est déjà en cours", Toast.LENGTH_SHORT).show();
+            return false;
         }
+        exportBusy = true;
+        btnExportPdf.setEnabled(false);
+        btnExportPng.setEnabled(false);
+        btnChoosePdf.setEnabled(false);
+        tvPosition.setText(message);
+        return true;
+    }
+
+    private void finishExport(boolean success, String message) {
+        runOnUiThread(() -> {
+            exportBusy = false;
+            btnExportPdf.setEnabled(true);
+            btnExportPng.setEnabled(true);
+            btnChoosePdf.setEnabled(true);
+            tvPosition.setText(message);
+            Toast.makeText(this, message, success ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
+        });
     }
 
     @Override
@@ -499,32 +751,72 @@ public class EditorActivity extends Activity {
     }
 
     @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        if (sourceUri != null) outState.putString(STATE_URI, sourceUri.toString());
+        outState.putInt(STATE_PAGE, pageIndex);
+        outState.putString(STATE_TEXT, etOverlayText == null ? "" : etOverlayText.getText().toString());
+        outState.putFloat(STATE_TEXT_SIZE, currentTextSize);
+        if (draftKey != null) saveDraft(true);
+    }
+
+    @Override
     protected void onPause() {
-        if (renderer != null) saveDraft();
+        if (draftKey != null) saveDraft(true);
         super.onPause();
     }
 
     private void closePdf() {
-        if (renderer != null) {
-            renderer.close();
-            renderer = null;
-        }
-        if (sourceDescriptor != null) {
-            try {
-                sourceDescriptor.close();
-            } catch (IOException ignored) {
+        renderGeneration.incrementAndGet();
+        synchronized (rendererLock) {
+            if (renderer != null) {
+                try {
+                    renderer.close();
+                } catch (Exception e) {
+                    AppLog.write(this, "closeRenderer", e);
+                }
+                renderer = null;
             }
-            sourceDescriptor = null;
+            if (sourceDescriptor != null) {
+                try {
+                    sourceDescriptor.close();
+                } catch (IOException e) {
+                    AppLog.write(this, "closeDescriptor", e);
+                }
+                sourceDescriptor = null;
+            }
         }
         if (pdfView != null) pdfView.setPage(null, null);
         sourceUri = null;
         draftKey = null;
-        detectedFieldsByPage.clear();
+        synchronized (detectedFieldsByPage) {
+            detectedFieldsByPage.clear();
+        }
     }
 
     @Override
     protected void onDestroy() {
+        destroyed = true;
+        renderGeneration.incrementAndGet();
+        if (draftKey != null) saveDraft(true);
+        worker.shutdownNow();
         closePdf();
         super.onDestroy();
+    }
+
+    private static void recycle(Bitmap bitmap) {
+        if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
+    }
+
+    private static float clamp01(float value) {
+        return Math.max(0f, Math.min(1f, value));
+    }
+
+    private static String safeMessage(Throwable error) {
+        if (error == null) return "erreur inconnue";
+        String message = error.getMessage();
+        return message == null || message.trim().isEmpty()
+                ? error.getClass().getSimpleName()
+                : message;
     }
 }
