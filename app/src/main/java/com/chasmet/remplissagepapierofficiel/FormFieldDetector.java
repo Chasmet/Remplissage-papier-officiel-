@@ -43,15 +43,15 @@ public final class FormFieldDetector {
 
         final int width = bitmap.getWidth();
         final int height = bitmap.getHeight();
-        if (width < 100 || height < 100) return Collections.emptyList();
+        if (width < 120 || height < 120) return Collections.emptyList();
 
-        final int left = Math.max(2, Math.round(width * 0.025f));
-        final int right = Math.min(width - 3, Math.round(width * 0.975f));
-        final int top = Math.max(2, Math.round(height * 0.045f));
-        final int bottom = Math.min(height - 3, Math.round(height * 0.955f));
-        final int minRun = Math.max(48, Math.round(width * 0.075f));
-        final int maxRun = Math.round(width * 0.92f);
-        final int maxGap = Math.max(1, Math.round(width / 900f));
+        final int left = Math.max(2, Math.round(width * 0.02f));
+        final int right = Math.min(width - 3, Math.round(width * 0.98f));
+        final int top = Math.max(2, Math.round(height * 0.04f));
+        final int bottom = Math.min(height - 3, Math.round(height * 0.96f));
+        final int minRun = Math.max(42, Math.round(width * 0.055f));
+        final int maxRun = Math.round(width * 0.93f);
+        final int maxGap = Math.max(1, Math.round(width / 1000f));
 
         List<Segment> raw = new ArrayList<>();
         int[] row = new int[width];
@@ -63,7 +63,7 @@ public final class FormFieldDetector {
             int gap = 0;
 
             for (int x = left; x <= right; x++) {
-                if (isLinePixel(row[x])) {
+                if (isRulePixel(row[x])) {
                     if (runStart < 0) runStart = x;
                     lastInk = x;
                     gap = 0;
@@ -82,66 +82,203 @@ public final class FormFieldDetector {
 
         if (raw.isEmpty()) return Collections.emptyList();
 
-        List<Segment> merged = mergeRows(raw, width, height);
+        List<Segment> merged = mergeRows(raw, height);
         List<FormField> result = new ArrayList<>();
         boolean[] consumed = new boolean[merged.size()];
 
-        // Rectangular fields: two thin horizontal borders with almost identical width.
-        for (int i = 0; i < merged.size(); i++) {
-            Segment topLine = merged.get(i);
-            if (!isUsefulLine(topLine, width, height)) continue;
-            for (int j = i + 1; j < merged.size(); j++) {
-                Segment bottomLine = merged.get(j);
-                float dy = bottomLine.centerY() - topLine.centerY();
-                if (dy > height * 0.085f) break;
-                if (dy < height * 0.012f) continue;
-                if (!isUsefulLine(bottomLine, width, height)) continue;
-
-                float overlap = overlapRatio(topLine, bottomLine);
-                float widthRatio = Math.min(topLine.width(), bottomLine.width())
-                        / (float) Math.max(topLine.width(), bottomLine.width());
-                if (overlap < 0.90f || widthRatio < 0.88f) continue;
-
-                int x1 = Math.max(topLine.x1, bottomLine.x1);
-                int x2 = Math.min(topLine.x2, bottomLine.x2);
-                if (x2 - x1 < minFieldWidth(width)) continue;
-
-                float fx = x1 / (float) width;
-                float fy = Math.max(0f, (topLine.y2 + 1) / (float) height);
-                float fw = (x2 - x1 + 1) / (float) width;
-                float fh = Math.max(0.012f, (bottomLine.y1 - topLine.y2 - 1) / (float) height);
-                result.add(new FormField(pageIndex, fx, fy, fw, fh, FormField.Type.BOX));
-                consumed[i] = true;
-                consumed[j] = true;
-                break;
-            }
-        }
-
-        // Underline-style fields: the writable zone is directly above the detected line.
-        for (int i = 0; i < merged.size(); i++) {
-            if (consumed[i]) continue;
-            Segment line = merged.get(i);
-            if (!isUsefulLine(line, width, height)) continue;
-
-            float lineWidth = line.width() / (float) width;
-            float fieldHeight = lineWidth < 0.18f ? 0.026f : 0.031f;
-            float lineY = line.centerY() / height;
-            float fx = line.x1 / (float) width;
-            float fy = Math.max(0f, lineY - fieldHeight);
-            float fw = line.width() / (float) width;
-            result.add(new FormField(pageIndex, fx, fy, fw, fieldHeight, FormField.Type.LINE));
-        }
+        detectBoxes(bitmap, pageIndex, merged, consumed, result);
+        detectUnderlines(bitmap, pageIndex, merged, consumed, result);
 
         result = deduplicate(result);
         result.sort(Comparator
                 .comparingDouble((FormField f) -> f.y)
                 .thenComparingDouble(f -> f.x));
 
-        // Avoid flooding the UI on pages containing tables or decorative rules.
-        if (result.size() > 80) {
-            result = new ArrayList<>(result.subList(0, 80));
+        if (result.size() > 60) {
+            result.sort((a, b) -> Float.compare(b.confidence, a.confidence));
+            result = new ArrayList<>(result.subList(0, 60));
+            result.sort(Comparator
+                    .comparingDouble((FormField f) -> f.y)
+                    .thenComparingDouble(f -> f.x));
         }
         return result;
+    }
+
+    private static void detectBoxes(Bitmap bitmap, int pageIndex, List<Segment> merged,
+                                    boolean[] consumed, List<FormField> out) {
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        int minFieldWidth = Math.max(40, Math.round(width * 0.055f));
+
+        for (int i = 0; i < merged.size(); i++) {
+            Segment topLine = merged.get(i);
+            if (!isUsefulHorizontal(topLine, width, height)) continue;
+
+            for (int j = i + 1; j < merged.size(); j++) {
+                Segment bottomLine = merged.get(j);
+                float dy = bottomLine.centerY() - topLine.centerY();
+                if (dy > height * 0.058f) break;
+                if (dy < height * 0.010f) continue;
+                if (!isUsefulHorizontal(bottomLine, width, height)) continue;
+
+                float overlap = overlapRatio(topLine, bottomLine);
+                float widthRatio = Math.min(topLine.width(), bottomLine.width())
+                        / (float) Math.max(topLine.width(), bottomLine.width());
+                if (overlap < 0.91f || widthRatio < 0.88f) continue;
+
+                int x1 = Math.max(topLine.x1, bottomLine.x1);
+                int x2 = Math.min(topLine.x2, bottomLine.x2);
+                int y1 = topLine.y2 + 1;
+                int y2 = bottomLine.y1 - 1;
+                if (x2 - x1 + 1 < minFieldWidth || y2 <= y1) continue;
+
+                float normalizedWidth = (x2 - x1 + 1) / (float) width;
+                float normalizedHeight = (y2 - y1 + 1) / (float) height;
+                if (normalizedHeight > 0.052f || normalizedHeight < 0.009f) continue;
+                if (normalizedWidth > 0.86f) continue;
+
+                float leftSide = verticalBorderEvidence(bitmap, x1, y1, y2);
+                float rightSide = verticalBorderEvidence(bitmap, x2, y1, y2);
+                float sideEvidence = (leftSide + rightSide) * 0.5f;
+
+                float interiorInk = inkDensity(bitmap,
+                        x1 + Math.max(2, (x2 - x1) / 45),
+                        y1 + 1,
+                        x2 - Math.max(2, (x2 - x1) / 45),
+                        y2 - 1);
+
+                // Headings and section bands usually contain much more text and have no side borders.
+                if (sideEvidence < 0.16f && interiorInk > 0.055f) continue;
+                if (sideEvidence < 0.10f) continue;
+                if (interiorInk > 0.19f) continue;
+
+                float confidence = 0.46f;
+                confidence += Math.min(0.27f, sideEvidence * 0.42f);
+                confidence += Math.max(0f, 0.14f - interiorInk * 0.55f);
+                if (normalizedHeight >= 0.014f && normalizedHeight <= 0.040f) confidence += 0.09f;
+                if (normalizedWidth <= 0.66f) confidence += 0.05f;
+                confidence = clamp01(confidence);
+                if (confidence < 0.58f) continue;
+
+                out.add(new FormField(
+                        pageIndex,
+                        x1 / (float) width,
+                        y1 / (float) height,
+                        (x2 - x1 + 1) / (float) width,
+                        Math.max(0.012f, (y2 - y1 + 1) / (float) height),
+                        FormField.Type.BOX,
+                        confidence
+                ));
+                consumed[i] = true;
+                consumed[j] = true;
+                break;
+            }
+        }
+    }
+
+    private static void detectUnderlines(Bitmap bitmap, int pageIndex, List<Segment> merged,
+                                         boolean[] consumed, List<FormField> out) {
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+
+        for (int i = 0; i < merged.size(); i++) {
+            if (consumed[i]) continue;
+            Segment line = merged.get(i);
+            if (!isUsefulHorizontal(line, width, height)) continue;
+
+            float normalizedWidth = line.width() / (float) width;
+            if (normalizedWidth > 0.60f) continue;
+
+            float fieldHeight = normalizedWidth < 0.16f ? 0.025f : 0.031f;
+            int bandHeight = Math.max(8, Math.round(height * fieldHeight));
+            int bandTop = Math.max(0, line.y1 - bandHeight);
+            int bandBottom = Math.max(bandTop, line.y1 - 1);
+
+            float insideInk = inkDensity(bitmap, line.x1, bandTop, line.x2, bandBottom);
+            if (insideInk > 0.18f) continue;
+
+            int contextPadX = Math.max(12, Math.round(width * 0.11f));
+            int contextPadY = Math.max(8, Math.round(height * 0.024f));
+            float leftInk = inkDensity(bitmap,
+                    Math.max(0, line.x1 - contextPadX),
+                    Math.max(0, line.y1 - contextPadY),
+                    Math.max(0, line.x1 - 2),
+                    Math.min(height - 1, line.y2 + 2));
+            float aboveInk = inkDensity(bitmap,
+                    line.x1,
+                    Math.max(0, line.y1 - contextPadY * 2),
+                    line.x2,
+                    Math.max(0, line.y1 - contextPadY));
+            float contextInk = Math.max(leftInk, aboveInk);
+
+            // Very long isolated rules are usually separators, not writable lines.
+            if (normalizedWidth > 0.42f && contextInk < 0.008f) continue;
+
+            float confidence = 0.50f;
+            confidence += Math.max(0f, 0.16f - insideInk * 0.55f);
+            confidence += Math.min(0.15f, contextInk * 2.4f);
+            if (normalizedWidth >= 0.08f && normalizedWidth <= 0.42f) confidence += 0.08f;
+            if (line.height() <= Math.max(5, Math.round(height * 0.004f))) confidence += 0.05f;
+            confidence = clamp01(confidence);
+            if (confidence < 0.59f) continue;
+
+            float lineY = line.centerY() / height;
+            out.add(new FormField(
+                    pageIndex,
+                    line.x1 / (float) width,
+                    Math.max(0f, lineY - fieldHeight),
+                    line.width() / (float) width,
+                    fieldHeight,
+                    FormField.Type.LINE,
+                    confidence
+            ));
+        }
+    }
+
+    private static float verticalBorderEvidence(Bitmap bitmap, int x, int y1, int y2) {
+        if (y2 <= y1) return 0f;
+        int width = bitmap.getWidth();
+        int radius = Math.max(1, width / 900);
+        int samples = 0;
+        int hits = 0;
+        int step = Math.max(1, (y2 - y1 + 1) / 35);
+
+        for (int y = y1; y <= y2; y += step) {
+            samples++;
+            boolean hit = false;
+            for (int dx = -radius; dx <= radius; dx++) {
+                int sx = Math.max(0, Math.min(width - 1, x + dx));
+                if (isRulePixel(bitmap.getPixel(sx, y))) {
+                    hit = true;
+                    break;
+                }
+            }
+            if (hit) hits++;
+        }
+        return samples == 0 ? 0f : hits / (float) samples;
+    }
+
+    private static float inkDensity(Bitmap bitmap, int x1, int y1, int x2, int y2) {
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        x1 = Math.max(0, Math.min(width - 1, x1));
+        x2 = Math.max(0, Math.min(width - 1, x2));
+        y1 = Math.max(0, Math.min(height - 1, y1));
+        y2 = Math.max(0, Math.min(height - 1, y2));
+        if (x2 < x1 || y2 < y1) return 0f;
+
+        int stepX = Math.max(1, (x2 - x1 + 1) / 90);
+        int stepY = Math.max(1, (y2 - y1 + 1) / 32);
+        int samples = 0;
+        int ink = 0;
+
+        for (int y = y1; y <= y2; y += stepY) {
+            for (int x = x1; x <= x2; x += stepX) {
+                samples++;
+                if (isTextPixel(bitmap.getPixel(x, y))) ink++;
+            }
+        }
+        return samples == 0 ? 0f : ink / (float) samples;
     }
 
     private static void addRun(List<Segment> raw, int start, int end, int y, int minRun, int maxRun) {
@@ -150,7 +287,7 @@ public final class FormFieldDetector {
         if (len >= minRun && len <= maxRun) raw.add(new Segment(start, end, y));
     }
 
-    private static List<Segment> mergeRows(List<Segment> raw, int width, int height) {
+    private static List<Segment> mergeRows(List<Segment> raw, int height) {
         raw.sort(Comparator.comparingInt((Segment s) -> s.y1).thenComparingInt(s -> s.x1));
         List<Segment> merged = new ArrayList<>();
         int maxVerticalGap = Math.max(2, Math.round(height * 0.0015f));
@@ -162,7 +299,7 @@ public final class FormFieldDetector {
                 Segment existing = merged.get(i);
                 if (candidate.y1 - existing.y2 > maxVerticalGap) break;
                 float overlap = overlapRatio(candidate, existing);
-                if (overlap > 0.72f && overlap > bestOverlap) {
+                if (overlap > 0.74f && overlap > bestOverlap) {
                     best = existing;
                     bestOverlap = overlap;
                 }
@@ -177,7 +314,7 @@ public final class FormFieldDetector {
             }
         }
 
-        int maxThickness = Math.max(8, Math.round(height * 0.008f));
+        int maxThickness = Math.max(8, Math.round(height * 0.007f));
         List<Segment> filtered = new ArrayList<>();
         for (Segment s : merged) {
             if (s.height() <= maxThickness) filtered.add(s);
@@ -185,18 +322,14 @@ public final class FormFieldDetector {
         return filtered;
     }
 
-    private static boolean isUsefulLine(Segment s, int width, int height) {
-        int minWidth = minFieldWidth(width);
+    private static boolean isUsefulHorizontal(Segment s, int width, int height) {
+        int minWidth = Math.max(40, Math.round(width * 0.055f));
         if (s.width() < minWidth) return false;
         if (s.width() > width * 0.90f) return false;
         float cy = s.centerY() / height;
-        if (cy < 0.055f || cy > 0.945f) return false;
-        if (s.x1 < width * 0.018f || s.x2 > width * 0.982f) return false;
+        if (cy < 0.05f || cy > 0.95f) return false;
+        if (s.x1 < width * 0.012f || s.x2 > width * 0.988f) return false;
         return true;
-    }
-
-    private static int minFieldWidth(int width) {
-        return Math.max(48, Math.round(width * 0.075f));
     }
 
     private static float overlapRatio(Segment a, Segment b) {
@@ -208,6 +341,7 @@ public final class FormFieldDetector {
     }
 
     private static List<FormField> deduplicate(List<FormField> fields) {
+        fields.sort((a, b) -> Float.compare(b.confidence, a.confidence));
         List<FormField> result = new ArrayList<>();
         for (FormField candidate : fields) {
             boolean duplicate = false;
@@ -216,7 +350,7 @@ public final class FormFieldDetector {
                 float dy = Math.abs(candidate.centerY() - existing.centerY());
                 float widthRatio = Math.min(candidate.width, existing.width)
                         / Math.max(candidate.width, existing.width);
-                if (dx < 0.018f && dy < 0.012f && widthRatio > 0.70f) {
+                if (dx < 0.020f && dy < 0.014f && widthRatio > 0.64f) {
                     duplicate = true;
                     break;
                 }
@@ -226,7 +360,7 @@ public final class FormFieldDetector {
         return result;
     }
 
-    private static boolean isLinePixel(int color) {
+    private static boolean isRulePixel(int color) {
         if (Color.alpha(color) < 80) return false;
         int r = Color.red(color);
         int g = Color.green(color);
@@ -236,9 +370,20 @@ public final class FormFieldDetector {
         int saturation = max - min;
         int luminance = (r * 299 + g * 587 + b * 114) / 1000;
 
-        // Dark rules/underscores plus common blue/teal form lines.
-        if (luminance < 145) return true;
-        boolean coloredRule = luminance < 225 && saturation > 22 && (b > r + 4 || g > r + 4);
-        return coloredRule;
+        if (luminance < 150) return true;
+        return luminance < 224 && saturation > 20 && (b > r + 3 || g > r + 3);
+    }
+
+    private static boolean isTextPixel(int color) {
+        if (Color.alpha(color) < 70) return false;
+        int r = Color.red(color);
+        int g = Color.green(color);
+        int b = Color.blue(color);
+        int luminance = (r * 299 + g * 587 + b * 114) / 1000;
+        return luminance < 135;
+    }
+
+    private static float clamp01(float value) {
+        return Math.max(0f, Math.min(1f, value));
     }
 }
