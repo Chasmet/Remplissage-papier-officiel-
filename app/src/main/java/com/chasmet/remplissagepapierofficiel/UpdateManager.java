@@ -248,7 +248,7 @@ public final class UpdateManager {
                     throw new IllegalStateException("Téléchargement HTTP " + code);
                 }
 
-                long total = connection.getContentLengthLong();
+                long total = connection.getContentLength();
                 long downloaded = 0;
                 int lastPercent = -1;
                 byte[] buffer = new byte[32 * 1024];
