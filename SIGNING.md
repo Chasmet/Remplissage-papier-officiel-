@@ -1,22 +1,32 @@
 # Signature Android permanente
 
-Les APK `1.x` historiques ont été générées avec des clés Android Debug différentes selon les runners GitHub Actions. Elles ne peuvent donc pas se remplacer entre elles de façon fiable.
+Les anciennes APK jusqu'à la série `1.3.x` ont été générées avec des clés Debug différentes selon les runners GitHub Actions. Android ne peut pas les remplacer par une APK signée avec une autre clé.
 
-À partir de la branche `main` version `2.0.0`, les Releases destinées aux mises à jour internes doivent être signées avec une clé permanente stockée uniquement dans GitHub Actions Secrets.
+## Chaîne permanente
 
-## Secrets requis
-
-- `ANDROID_KEYSTORE_BASE64` : keystore JKS encodé en Base64.
-- `ANDROID_KEYSTORE_PASSWORD` : mot de passe du keystore et de la clé.
-
-Alias fixe : `remplissage`
+À partir de `1.4.0`, toutes les Releases officielles doivent utiliser exactement la même clé Android permanente.
 
 Empreinte SHA-256 autorisée :
 
 `B5:BB:DB:25:21:AC:E4:77:BB:C1:AA:2F:43:1A:DD:E7:06:12:68:A3:8E:26:73:31:FC:B6:7D:1E:97:64:0A:FD`
 
-Le workflow compile toujours `assembleDebug` pour vérifier le projet, mais ne publie aucune Release de mise à jour si les secrets de signature sont absents. Quand ils sont présents, il compile `assembleRelease`, vérifie l'empreinte du certificat avec `apksigner`, puis publie uniquement cette APK signée.
+Alias : `remplissage`
 
-## Migration 1.x -> 2.x
+Le workflow GitHub Actions :
 
-À cause de l'ancienne signature Debug non stable, le passage à `2.0.0` nécessite une désinstallation/réinstallation unique. Après installation de `2.0.0`, toutes les versions futures doivent conserver la clé permanente ci-dessus afin que les mises à jour internes remplacent l'application sans supprimer ses données.
+1. compile et exécute les vérifications de qualité ;
+2. obtient temporairement la clé via une requête GitHub OIDC limitée au dépôt, à la branche `main` et au workflow Android ;
+3. construit `assembleRelease` ;
+4. vérifie avec `apksigner` que le certificat correspond exactement à l'empreinte permanente ci-dessus ;
+5. calcule le SHA-256 de l'APK ;
+6. publie l'APK uniquement si le commit est toujours le dernier commit de `main` ;
+7. refuse de réutiliser un numéro de version déjà publié pour un autre commit ;
+8. supprime le matériel de signature du runner après compilation.
+
+La clé privée ne doit jamais être placée dans l'APK, dans le dépôt GitHub public ou dans un fichier utilisateur.
+
+## Règle impérative
+
+Ne jamais changer cette clé pour les futures versions. Toute APK destinée à remplacer `1.4.0` ou une version ultérieure doit être signée avec le certificat ci-dessus et utiliser un `versionCode` strictement supérieur.
+
+Les versions `1.3.x` et antérieures peuvent nécessiter une désinstallation/réinstallation unique pour rejoindre la chaîne permanente.
