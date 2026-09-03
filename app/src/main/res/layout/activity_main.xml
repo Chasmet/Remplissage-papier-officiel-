@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="24dp">
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Remplissage papier officiel" android:textSize="26sp" android:textStyle="bold" />
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="Remplis un formulaire PDF puis exporte-le prêt à imprimer." android:textSize="16sp" />
+    <Button android:id="@+id/btnNewDocument" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="28dp" android:text="Remplir un document PDF" />
+    <Button android:id="@+id/btnProfile" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="Mon profil" />
+    <Button android:id="@+id/btnSettings" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="Réglages et mises à jour" />
+</LinearLayout>
