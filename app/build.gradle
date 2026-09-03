@@ -10,33 +10,32 @@ android {
         applicationId 'com.chasmet.remplissagepapierofficiel'
         minSdk 21
         targetSdk 34
-        versionCode 6
-        versionName '1.3.0'
+        versionCode 7
+        versionName '2.0.0'
     }
 
     signingConfigs {
-        ciSigning {
+        permanentRelease {
             def ks = System.getenv('ANDROID_KEYSTORE_FILE')
-            if (ks != null && !ks.isBlank()) {
+            def password = System.getenv('ANDROID_KEYSTORE_PASSWORD')
+            if (ks != null && !ks.isBlank() && password != null && !password.isBlank()) {
                 storeFile file(ks)
-                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD') ?: ''
-                keyAlias System.getenv('ANDROID_KEY_ALIAS') ?: ''
-                keyPassword System.getenv('ANDROID_KEY_PASSWORD') ?: ''
+                storePassword password
+                keyAlias 'remplissage'
+                keyPassword password
             }
         }
     }
 
     buildTypes {
         debug {
-            if (System.getenv('ANDROID_KEYSTORE_FILE')) {
-                signingConfig signingConfigs.ciSigning
-            }
+            // Debug builds are compile/test artifacts only and are never published as updates.
         }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            if (System.getenv('ANDROID_KEYSTORE_FILE')) {
-                signingConfig signingConfigs.ciSigning
+            if (System.getenv('ANDROID_KEYSTORE_FILE') && System.getenv('ANDROID_KEYSTORE_PASSWORD')) {
+                signingConfig signingConfigs.permanentRelease
             }
         }
     }
