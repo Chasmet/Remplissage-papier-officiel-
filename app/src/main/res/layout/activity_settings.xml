@@ -184,6 +184,19 @@
                 android:textColor="#BFC4C6"
                 android:textSize="13sp" />
 
+            <TextView
+                android:id="@+id/tvUpdateDiagnostics"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_input"
+                android:fontFamily="monospace"
+                android:padding="10dp"
+                android:text="Diagnostic de mise à jour"
+                android:textColor="#D6DADB"
+                android:textIsSelectable="true"
+                android:textSize="11sp" />
+
             <ProgressBar
                 android:id="@+id/progressUpdate"
                 style="?android:attr/progressBarStyleHorizontal"
