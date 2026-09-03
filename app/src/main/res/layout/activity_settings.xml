@@ -66,10 +66,10 @@
                 android:textStyle="bold" />
 
             <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="URL du serveur" android:textColor="#BFC4C6" android:textSize="12sp" />
-            <EditText android:id="@+id/etMcpUrl" android:layout_width="match_parent" android:layout_height="50dp" android:layout_marginTop="5dp" android:background="@drawable/bg_input" android:hint="https://mcp.votre-serveur.com" android:hintTextColor="#737A7E" android:inputType="textUri" android:textColor="#FFFFFF" />
+            <EditText android:id="@+id/etMcpUrl" android:layout_width="match_parent" android:layout_height="50dp" android:layout_marginTop="5dp" android:background="@drawable/bg_input" android:hint="https://mcp.votre-serveur.com" android:textColorHint="#737A7E" android:inputType="textUri" android:textColor="#FFFFFF" />
 
             <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="Jeton" android:textColor="#BFC4C6" android:textSize="12sp" />
-            <EditText android:id="@+id/etMcpToken" android:layout_width="match_parent" android:layout_height="50dp" android:layout_marginTop="5dp" android:background="@drawable/bg_input" android:hint="Jeton MCP facultatif" android:hintTextColor="#737A7E" android:inputType="textPassword" android:textColor="#FFFFFF" />
+            <EditText android:id="@+id/etMcpToken" android:layout_width="match_parent" android:layout_height="50dp" android:layout_marginTop="5dp" android:background="@drawable/bg_input" android:hint="Jeton MCP facultatif" android:textColorHint="#737A7E" android:inputType="textPassword" android:textColor="#FFFFFF" />
 
             <Button
                 android:id="@+id/btnSaveMcp"
