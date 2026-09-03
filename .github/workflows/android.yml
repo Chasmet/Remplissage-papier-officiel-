@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 concurrency:
   group: android-main
@@ -46,41 +47,56 @@ jobs:
           chmod +x gradlew
           ./gradlew clean assembleDebug
 
-      - name: Check permanent signing secrets
-        id: signing
+      - name: Obtain permanent signing key
         shell: bash
         env:
-          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          SIGNING_VAULT_URL: https://gflnvlolwqnvzxyqsrir.supabase.co/functions/v1/remplissage-signing-vault
         run: |
-          if [ -n "$KEYSTORE_B64" ] && [ -n "$KEYSTORE_PASSWORD" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::APK Release non publié : configure ANDROID_KEYSTORE_BASE64 et ANDROID_KEYSTORE_PASSWORD dans Settings > Secrets and variables > Actions."
-          fi
+          set -euo pipefail
+          OIDC_RESPONSE=$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=remplissage-signing")
+          OIDC_TOKEN=$(OIDC_RESPONSE="$OIDC_RESPONSE" python3 - <<'PY'
+          import json, os
+          data = json.loads(os.environ['OIDC_RESPONSE'])
+          token = data.get('value')
+          if not token:
+              raise SystemExit('Jeton OIDC GitHub manquant')
+          print(token)
+          PY
+          )
 
-      - name: Restore permanent signing key
-        if: steps.signing.outputs.enabled == 'true'
-        shell: bash
-        env:
-          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/remplissage-release.jks"
-          chmod 600 "$RUNNER_TEMP/remplissage-release.jks"
+          curl --fail --silent --show-error --request POST \
+            -H "Authorization: Bearer $OIDC_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data '{}' \
+            "$SIGNING_VAULT_URL" > "$RUNNER_TEMP/remplissage-vault.json"
+
+          python3 - <<'PY'
+          import base64, json, os, pathlib
+          temp = pathlib.Path(os.environ['RUNNER_TEMP'])
+          data = json.loads((temp / 'remplissage-vault.json').read_text())
+          raw = base64.b64decode(data['keystoreBase64'])
+          (temp / 'remplissage-release.jks').write_bytes(raw)
+          (temp / 'remplissage-password.txt').write_text(data['password'])
+          if len(raw) < 1000:
+              raise SystemExit('Keystore reçu invalide')
+          PY
+          chmod 600 "$RUNNER_TEMP/remplissage-release.jks" "$RUNNER_TEMP/remplissage-password.txt"
+          rm -f "$RUNNER_TEMP/remplissage-vault.json"
 
       - name: Build permanently signed Release APK
-        if: steps.signing.outputs.enabled == 'true'
-        env:
-          ANDROID_KEYSTORE_FILE: ${{ runner.temp }}/remplissage-release.jks
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        shell: bash
         run: |
+          set -euo pipefail
+          export ANDROID_KEYSTORE_FILE="$RUNNER_TEMP/remplissage-release.jks"
+          export ANDROID_KEYSTORE_PASSWORD="$(cat "$RUNNER_TEMP/remplissage-password.txt")"
           ./gradlew assembleRelease
 
       - name: Verify permanent signer
-        if: steps.signing.outputs.enabled == 'true'
         shell: bash
         run: |
+          set -euo pipefail
           APK="app/build/outputs/apk/release/app-release.apk"
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
           if [ -z "$APKSIGNER" ]; then
@@ -97,13 +113,11 @@ jobs:
           echo "Signature permanente vérifiée: $ACTUAL"
 
       - name: Prepare signed APK
-        if: steps.signing.outputs.enabled == 'true'
         shell: bash
         run: |
           cp app/build/outputs/apk/release/app-release.apk "Remplissage-papier-officiel-v${{ steps.version.outputs.version }}.apk"
 
       - name: Upload signed APK artifact
-        if: steps.signing.outputs.enabled == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: Remplissage-papier-officiel-APK-v${{ steps.version.outputs.version }}
@@ -111,7 +125,6 @@ jobs:
           if-no-files-found: error
 
       - name: Verify this is still the latest commit
-        if: steps.signing.outputs.enabled == 'true'
         id: latest
         shell: bash
         run: |
@@ -125,11 +138,12 @@ jobs:
           fi
 
       - name: Publish signed GitHub Release for in-app update
-        if: github.ref == 'refs/heads/main' && steps.signing.outputs.enabled == 'true' && steps.latest.outputs.publish == 'true'
+        if: github.ref == 'refs/heads/main' && steps.latest.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          set -euo pipefail
           TAG="v${{ steps.version.outputs.version }}"
           APK="Remplissage-papier-officiel-v${{ steps.version.outputs.version }}.apk"
 
@@ -139,5 +153,13 @@ jobs:
             gh release create "$TAG" "$APK" \
               --target "$GITHUB_SHA" \
               --title "Remplissage Papier Officiel $TAG" \
-              --notes "APK signé avec la clé permanente de l'application. Les versions suivantes pourront être installées depuis Réglages > Mises à jour sans désinstaller l'application."
+              --notes "Version stabilité $TAG. APK signé avec la clé permanente de l'application pour les futures mises à jour internes."
           fi
+
+      - name: Remove signing material
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/remplissage-release.jks" \
+                "$RUNNER_TEMP/remplissage-password.txt" \
+                "$RUNNER_TEMP/remplissage-vault.json"
