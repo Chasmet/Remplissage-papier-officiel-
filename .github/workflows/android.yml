@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -103,9 +103,18 @@ jobs:
             echo "apksigner introuvable"
             exit 1
           fi
-          "$APKSIGNER" verify --verbose --print-certs "$APK"
-          ACTUAL=$("$APKSIGNER" verify --print-certs "$APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1 | tr -d ':' | tr '[:lower:]' '[:upper:]')
+          VERIFY_OUTPUT=$("$APKSIGNER" verify --verbose --print-certs "$APK")
+          printf '%s\n' "$VERIFY_OUTPUT"
+          ACTUAL=$(printf '%s\n' "$VERIFY_OUTPUT" \
+            | sed -n 's/^.*Signer: certificate SHA-256 digest: //p' \
+            | head -n 1 \
+            | tr -d ':' \
+            | tr '[:lower:]' '[:upper:]')
           EXPECTED="B5BBDB2521ACE477BBC1AA2F431ADDE7061268A38E267331FCB67D1E97640AFD"
+          if [ -z "$ACTUAL" ]; then
+            echo "Impossible de lire l’empreinte SHA-256 du certificat"
+            exit 1
+          fi
           if [ "$ACTUAL" != "$EXPECTED" ]; then
             echo "Mauvaise clé de signature. Attendu: $EXPECTED ; obtenu: $ACTUAL"
             exit 1
