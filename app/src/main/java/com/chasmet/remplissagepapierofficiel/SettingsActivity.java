@@ -1,7 +1,9 @@
 package com.chasmet.remplissagepapierofficiel;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.Uri;
 import android.os.Bundle;
 import android.widget.Button;
 import android.widget.EditText;
@@ -14,10 +16,13 @@ import java.io.File;
 public class SettingsActivity extends Activity {
     private static final String PREFS = "settings";
     private static final String STATE_PENDING_INSTALL = "pending_install";
+    private static final int REQ_CREATE_BACKUP = 301;
+    private static final int REQ_RESTORE_BACKUP = 302;
 
     private TextView tvUpdateStatus;
     private TextView tvPercent;
     private TextView tvMcpStatus;
+    private TextView tvBackupStatus;
     private ProgressBar progressUpdate;
     private Button btnDownloadUpdate;
     private Button btnInstallUpdate;
@@ -41,6 +46,7 @@ public class SettingsActivity extends Activity {
         tvUpdateStatus = findViewById(R.id.tvUpdateStatus);
         tvPercent = findViewById(R.id.tvPercent);
         tvMcpStatus = findViewById(R.id.tvMcpStatus);
+        tvBackupStatus = findViewById(R.id.tvBackupStatus);
         progressUpdate = findViewById(R.id.progressUpdate);
         btnDownloadUpdate = findViewById(R.id.btnDownloadUpdate);
         btnInstallUpdate = findViewById(R.id.btnInstallUpdate);
@@ -58,6 +64,8 @@ public class SettingsActivity extends Activity {
         downloadedApk = UpdateManager.getUpdateFile(this);
         validateExistingDownload();
 
+        findViewById(R.id.btnBackupData).setOnClickListener(v -> requestBackupDestination());
+        findViewById(R.id.btnRestoreData).setOnClickListener(v -> requestBackupSource());
         btnCheckUpdate.setOnClickListener(v -> checkUpdate());
         btnDownloadUpdate.setOnClickListener(v -> downloadUpdate());
         btnInstallUpdate.setOnClickListener(v -> installUpdate());
@@ -82,6 +90,56 @@ public class SettingsActivity extends Activity {
             tvUpdateStatus.setText("Autorisation accordée. Ouverture de l’installation…");
             installUpdate();
         }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        Uri uri = data.getData();
+
+        if (requestCode == REQ_CREATE_BACKUP) {
+            try {
+                DataBackupManager.write(this, uri);
+                tvBackupStatus.setText("Sauvegarde créée. Gardez ce fichier : il permet de restaurer profil et brouillons après une réinstallation.");
+                Toast.makeText(this, "Sauvegarde terminée", Toast.LENGTH_SHORT).show();
+            } catch (Exception e) {
+                AppLog.write(this, "backupData", e);
+                tvBackupStatus.setText("Sauvegarde impossible : " + safeMessage(e));
+                Toast.makeText(this, "Sauvegarde impossible", Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
+
+        if (requestCode == REQ_RESTORE_BACKUP) {
+            try {
+                DataBackupManager.RestoreResult result = DataBackupManager.restore(this, uri);
+                loadMcpSettings();
+                tvBackupStatus.setText("Restauration terminée : " + result.profileItems
+                        + " éléments de profil et " + result.draftItems + " éléments de brouillons restaurés.");
+                Toast.makeText(this, "Données restaurées", Toast.LENGTH_SHORT).show();
+            } catch (Exception e) {
+                AppLog.write(this, "restoreData", e);
+                tvBackupStatus.setText("Restauration impossible : " + safeMessage(e));
+                Toast.makeText(this, "Fichier de sauvegarde invalide", Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    private void requestBackupDestination() {
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/json");
+        intent.putExtra(Intent.EXTRA_TITLE, DataBackupManager.suggestedFileName());
+        startActivityForResult(intent, REQ_CREATE_BACKUP);
+    }
+
+    private void requestBackupSource() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/json");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        startActivityForResult(intent, REQ_RESTORE_BACKUP);
     }
 
     private void validateExistingDownload() {
@@ -244,6 +302,8 @@ public class SettingsActivity extends Activity {
         etMcpToken.setText(p.getString("mcpToken", ""));
         if (!p.getString("mcpUrl", "").isEmpty()) {
             tvMcpStatus.setText("MCP configuré. Testez la connexion.");
+        } else {
+            tvMcpStatus.setText("MCP non configuré.");
         }
     }
 
