@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!--
+      EditorActivity masks Intent flags to READ/WRITE before calling
+      takePersistableUriPermission. Android Lint cannot prove the masked local
+      variable only contains those two documented flags, so it reports a
+      WrongConstant false positive. Runtime flags remain explicitly masked.
+    -->
+    <issue id="WrongConstant">
+        <ignore path="src/main/java/com/chasmet/remplissagepapierofficiel/EditorActivity.java" />
+    </issue>
+</lint>
