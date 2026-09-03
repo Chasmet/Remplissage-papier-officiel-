@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: android-main
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -54,8 +58,21 @@ jobs:
           path: Remplissage-papier-officiel-v${{ steps.version.outputs.version }}.apk
           if-no-files-found: error
 
+      - name: Verify this is still the latest commit
+        id: latest
+        shell: bash
+        run: |
+          git fetch origin main --depth=1
+          HEAD_MAIN=$(git rev-parse origin/main)
+          if [ "$HEAD_MAIN" = "$GITHUB_SHA" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Un commit plus récent existe, publication ignorée."
+          fi
+
       - name: Publish GitHub Release for in-app update
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && steps.latest.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
