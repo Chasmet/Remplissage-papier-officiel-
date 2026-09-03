@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Mon profil" android:textSize="24sp" android:textStyle="bold" />
+        <EditText android:id="@+id/etFirstName" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Prénom" />
+        <EditText android:id="@+id/etLastName" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Nom" />
+        <EditText android:id="@+id/etBirthDate" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Date de naissance" />
+        <EditText android:id="@+id/etBirthPlace" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Lieu de naissance" />
+        <EditText android:id="@+id/etAddress" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Adresse" />
+        <EditText android:id="@+id/etPostalCode" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Code postal" android:inputType="number" />
+        <EditText android:id="@+id/etCity" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Ville" />
+        <EditText android:id="@+id/etPhone" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Téléphone" android:inputType="phone" />
+        <EditText android:id="@+id/etEmail" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="E-mail" android:inputType="textEmailAddress" />
+        <EditText android:id="@+id/etOtherId" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Identifiant / numéro de dossier (facultatif)" />
+        <Button android:id="@+id/btnSaveProfile" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="18dp" android:text="Enregistrer le profil" />
+    </LinearLayout>
+</ScrollView>
