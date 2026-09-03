@@ -98,7 +98,7 @@
         android:layout_marginTop="6dp"
         android:background="@drawable/bg_input"
         android:hint="Texte à inscrire"
-        android:hintTextColor="#737A7E"
+        android:textColorHint="#737A7E"
         android:singleLine="true"
         android:textColor="#FFFFFF"
         android:textColorHighlight="#FF6500" />
