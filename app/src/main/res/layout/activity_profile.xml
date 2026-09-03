@@ -1,17 +1,71 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent">
-    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Mon profil" android:textSize="24sp" android:textStyle="bold" />
-        <EditText android:id="@+id/etFirstName" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Prénom" />
-        <EditText android:id="@+id/etLastName" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Nom" />
-        <EditText android:id="@+id/etBirthDate" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Date de naissance" />
-        <EditText android:id="@+id/etBirthPlace" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Lieu de naissance" />
-        <EditText android:id="@+id/etAddress" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Adresse" />
-        <EditText android:id="@+id/etPostalCode" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Code postal" android:inputType="number" />
-        <EditText android:id="@+id/etCity" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Ville" />
-        <EditText android:id="@+id/etPhone" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Téléphone" android:inputType="phone" />
-        <EditText android:id="@+id/etEmail" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="E-mail" android:inputType="textEmailAddress" />
-        <EditText android:id="@+id/etOtherId" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Identifiant / numéro de dossier (facultatif)" />
-        <Button android:id="@+id/btnSaveProfile" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="18dp" android:text="Enregistrer le profil" />
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#090D0F"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <ImageView
+            android:layout_width="90dp"
+            android:layout_height="90dp"
+            android:layout_gravity="center_horizontal"
+            android:contentDescription="Logo"
+            android:src="@drawable/logo_app" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:text="MON PROFIL"
+            android:textColor="#FFF1D7"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:gravity="center"
+            android:text="Enregistre tes informations une fois pour remplir plus vite tes documents."
+            android:textColor="#AEB4B7"
+            android:textSize="13sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <EditText android:id="@+id/etFirstName" android:layout_width="match_parent" android:layout_height="50dp" android:background="@drawable/bg_input" android:hint="Prénom" android:hintTextColor="#737A7E" android:textColor="#FFFFFF" />
+            <EditText android:id="@+id/etLastName" android:layout_width="match_parent" android:layout_height="50dp" android:layout_marginTop="9dp" android:background="@drawable/bg_input" android:hint="Nom" android:hintTextColor="#737A7E" android:textColor="#FFFFFF" />
+            <EditText android:id="@+id/etBirthDate" android:layout_width="match_parent" android:layout_height="50dp" android:layout_marginTop="9dp" android:background="@drawable/bg_input" android:hint="Date de naissance" android:hintTextColor="#737A7E" android:textColor="#FFFFFF" />
+            <EditText android:id="@+id/etBirthPlace" android:layout_width="match_parent" android:layout_height="50dp" android:layout_marginTop="9dp" android:background="@drawable/bg_input" android:hint="Lieu de naissance" android:hintTextColor="#737A7E" android:textColor="#FFFFFF" />
+            <EditText android:id="@+id/etAddress" android:layout_width="match_parent" android:layout_height="50dp" android:layout_marginTop="9dp" android:background="@drawable/bg_input" android:hint="Adresse" android:hintTextColor="#737A7E" android:textColor="#FFFFFF" />
+            <EditText android:id="@+id/etPostalCode" android:layout_width="match_parent" android:layout_height="50dp" android:layout_marginTop="9dp" android:background="@drawable/bg_input" android:hint="Code postal" android:hintTextColor="#737A7E" android:inputType="number" android:textColor="#FFFFFF" />
+            <EditText android:id="@+id/etCity" android:layout_width="match_parent" android:layout_height="50dp" android:layout_marginTop="9dp" android:background="@drawable/bg_input" android:hint="Ville" android:hintTextColor="#737A7E" android:textColor="#FFFFFF" />
+            <EditText android:id="@+id/etPhone" android:layout_width="match_parent" android:layout_height="50dp" android:layout_marginTop="9dp" android:background="@drawable/bg_input" android:hint="Téléphone" android:hintTextColor="#737A7E" android:inputType="phone" android:textColor="#FFFFFF" />
+            <EditText android:id="@+id/etEmail" android:layout_width="match_parent" android:layout_height="50dp" android:layout_marginTop="9dp" android:background="@drawable/bg_input" android:hint="E-mail" android:hintTextColor="#737A7E" android:inputType="textEmailAddress" android:textColor="#FFFFFF" />
+            <EditText android:id="@+id/etOtherId" android:layout_width="match_parent" android:layout_height="50dp" android:layout_marginTop="9dp" android:background="@drawable/bg_input" android:hint="Identifiant / numéro de dossier (facultatif)" android:hintTextColor="#737A7E" android:textColor="#FFFFFF" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/btnSaveProfile"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/bg_button_orange"
+            android:backgroundTint="@null"
+            android:text="ENREGISTRER LE PROFIL"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold" />
+
     </LinearLayout>
 </ScrollView>

@@ -1,22 +1,190 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent">
-    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Réglages" android:textSize="24sp" android:textStyle="bold" />
-        <TextView android:id="@+id/tvVersion" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="Version" />
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#090D0F"
+    android:fillViewport="true">
 
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="24dp" android:text="Mise à jour de l’application" android:textSize="19sp" android:textStyle="bold" />
-        <Button android:id="@+id/btnCheckUpdate" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Vérifier les mises à jour" />
-        <TextView android:id="@+id/tvUpdateStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Aucune vérification effectuée." />
-        <ProgressBar android:id="@+id/progressUpdate" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="100" android:progress="0" />
-        <TextView android:id="@+id/tvPercent" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:text="0 %" android:textStyle="bold" />
-        <Button android:id="@+id/btnDownloadUpdate" android:layout_width="match_parent" android:layout_height="wrap_content" android:enabled="false" android:text="Télécharger la mise à jour" />
-        <Button android:id="@+id/btnInstallUpdate" android:layout_width="match_parent" android:layout_height="wrap_content" android:enabled="false" android:text="Installer la mise à jour téléchargée" />
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
 
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="28dp" android:text="Connexion MCP" android:textSize="19sp" android:textStyle="bold" />
-        <EditText android:id="@+id/etMcpUrl" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="URL HTTPS du serveur MCP" android:inputType="textUri" />
-        <EditText android:id="@+id/etMcpToken" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Jeton MCP facultatif" android:inputType="textPassword" />
-        <Button android:id="@+id/btnSaveMcp" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Enregistrer MCP" />
-        <Button android:id="@+id/btnTestMcp" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Tester la connexion MCP" />
-        <TextView android:id="@+id/tvMcpStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="MCP non configuré." />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:layout_width="68dp"
+                android:layout_height="68dp"
+                android:contentDescription="Logo"
+                android:src="@drawable/logo_app" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="14dp"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="RÉGLAGES"
+                    android:textColor="#FFF1D7"
+                    android:textSize="24sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvVersion"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Version"
+                    android:textColor="#FF8A3D"
+                    android:textSize="13sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="CONNEXION MCP"
+                android:textColor="#FFF1D7"
+                android:textSize="19sp"
+                android:textStyle="bold" />
+
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="URL du serveur" android:textColor="#BFC4C6" android:textSize="12sp" />
+            <EditText android:id="@+id/etMcpUrl" android:layout_width="match_parent" android:layout_height="50dp" android:layout_marginTop="5dp" android:background="@drawable/bg_input" android:hint="https://mcp.votre-serveur.com" android:hintTextColor="#737A7E" android:inputType="textUri" android:textColor="#FFFFFF" />
+
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="Jeton" android:textColor="#BFC4C6" android:textSize="12sp" />
+            <EditText android:id="@+id/etMcpToken" android:layout_width="match_parent" android:layout_height="50dp" android:layout_marginTop="5dp" android:background="@drawable/bg_input" android:hint="Jeton MCP facultatif" android:hintTextColor="#737A7E" android:inputType="textPassword" android:textColor="#FFFFFF" />
+
+            <Button
+                android:id="@+id/btnSaveMcp"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bg_button_dark"
+                android:backgroundTint="@null"
+                android:text="ENREGISTRER MCP"
+                android:textColor="#FFE1A8"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/btnTestMcp"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bg_button_orange"
+                android:backgroundTint="@null"
+                android:text="TESTER LA CONNEXION"
+                android:textColor="#FFFFFF"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvMcpStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="MCP non configuré."
+                android:textColor="#AEB4B7"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="MISES À JOUR"
+                android:textColor="#FFF1D7"
+                android:textSize="19sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvUpdateStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="Aucune vérification effectuée."
+                android:textColor="#BFC4C6"
+                android:textSize="13sp" />
+
+            <ProgressBar
+                android:id="@+id/progressUpdate"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="10dp"
+                android:layout_marginTop="14dp"
+                android:max="100"
+                android:progress="0"
+                android:progressTint="#FF5A00"
+                android:progressBackgroundTint="#34393D" />
+
+            <TextView
+                android:id="@+id/tvPercent"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="7dp"
+                android:gravity="right"
+                android:text="0 %"
+                android:textColor="#FF8A3D"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/btnCheckUpdate"
+                android:layout_width="match_parent"
+                android:layout_height="50dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bg_button_dark"
+                android:backgroundTint="@null"
+                android:text="VÉRIFIER LES MISES À JOUR"
+                android:textColor="#FFE1A8"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/btnDownloadUpdate"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bg_button_orange"
+                android:backgroundTint="@null"
+                android:enabled="false"
+                android:text="TÉLÉCHARGER LA MISE À JOUR"
+                android:textColor="#FFFFFF"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/btnInstallUpdate"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bg_button_dark"
+                android:backgroundTint="@null"
+                android:enabled="false"
+                android:text="INSTALLER LA MISE À JOUR"
+                android:textColor="#FFE1A8"
+                android:textStyle="bold" />
+        </LinearLayout>
+
     </LinearLayout>
 </ScrollView>
