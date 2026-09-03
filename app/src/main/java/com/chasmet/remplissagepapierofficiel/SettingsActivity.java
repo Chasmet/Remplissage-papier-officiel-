@@ -55,6 +55,8 @@ public class SettingsActivity extends Activity {
         btnInstallUpdate.setOnClickListener(v -> installUpdate());
         findViewById(R.id.btnSaveMcp).setOnClickListener(v -> saveMcpSettings());
         findViewById(R.id.btnTestMcp).setOnClickListener(v -> testMcp());
+
+        checkUpdate();
     }
 
     private void checkUpdate() {
