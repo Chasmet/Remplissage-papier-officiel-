@@ -41,17 +41,69 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Version détectée: $VERSION"
 
-      - name: Build APK
+      - name: Compile check
         run: |
           chmod +x gradlew
           ./gradlew clean assembleDebug
 
-      - name: Prepare APK
+      - name: Check permanent signing secrets
+        id: signing
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$KEYSTORE_PASSWORD" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::APK Release non publié : configure ANDROID_KEYSTORE_BASE64 et ANDROID_KEYSTORE_PASSWORD dans Settings > Secrets and variables > Actions."
+          fi
+
+      - name: Restore permanent signing key
+        if: steps.signing.outputs.enabled == 'true'
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/remplissage-release.jks"
+          chmod 600 "$RUNNER_TEMP/remplissage-release.jks"
+
+      - name: Build permanently signed Release APK
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          ANDROID_KEYSTORE_FILE: ${{ runner.temp }}/remplissage-release.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          ./gradlew assembleRelease
+
+      - name: Verify permanent signer
+        if: steps.signing.outputs.enabled == 'true'
         shell: bash
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk "Remplissage-papier-officiel-v${{ steps.version.outputs.version }}.apk"
+          APK="app/build/outputs/apk/release/app-release.apk"
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
+          if [ -z "$APKSIGNER" ]; then
+            echo "apksigner introuvable"
+            exit 1
+          fi
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+          ACTUAL=$("$APKSIGNER" verify --print-certs "$APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1 | tr -d ':' | tr '[:lower:]' '[:upper:]')
+          EXPECTED="B5BBDB2521ACE477BBC1AA2F431ADDE7061268A38E267331FCB67D1E97640AFD"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "Mauvaise clé de signature. Attendu: $EXPECTED ; obtenu: $ACTUAL"
+            exit 1
+          fi
+          echo "Signature permanente vérifiée: $ACTUAL"
 
-      - name: Upload APK artifact
+      - name: Prepare signed APK
+        if: steps.signing.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk "Remplissage-papier-officiel-v${{ steps.version.outputs.version }}.apk"
+
+      - name: Upload signed APK artifact
+        if: steps.signing.outputs.enabled == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: Remplissage-papier-officiel-APK-v${{ steps.version.outputs.version }}
@@ -59,6 +111,7 @@ jobs:
           if-no-files-found: error
 
       - name: Verify this is still the latest commit
+        if: steps.signing.outputs.enabled == 'true'
         id: latest
         shell: bash
         run: |
@@ -71,8 +124,8 @@ jobs:
             echo "Un commit plus récent existe, publication ignorée."
           fi
 
-      - name: Publish GitHub Release for in-app update
-        if: github.ref == 'refs/heads/main' && steps.latest.outputs.publish == 'true'
+      - name: Publish signed GitHub Release for in-app update
+        if: github.ref == 'refs/heads/main' && steps.signing.outputs.enabled == 'true' && steps.latest.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -86,5 +139,5 @@ jobs:
             gh release create "$TAG" "$APK" \
               --target "$GITHUB_SHA" \
               --title "Remplissage Papier Officiel $TAG" \
-              --notes "Mise à jour Android $TAG. Téléchargeable directement depuis le menu Réglages > Mises à jour de l'application."
+              --notes "APK signé avec la clé permanente de l'application. Les versions suivantes pourront être installées depuis Réglages > Mises à jour sans désinstaller l'application."
           fi
