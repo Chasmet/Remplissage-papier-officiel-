@@ -53,6 +53,62 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="18dp"
+            android:background="@drawable/bg_card_accent"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="SAUVEGARDE &amp; MIGRATION"
+                android:textColor="#FFF1D7"
+                android:textSize="19sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Sauvegarde le profil et tous les brouillons dans un fichier portable. Le jeton MCP n’est jamais exporté."
+                android:textColor="#BFC4C6"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/btnBackupData"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bg_button_orange"
+                android:backgroundTint="@null"
+                android:text="SAUVEGARDER MES DONNÉES"
+                android:textColor="#FFFFFF"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/btnRestoreData"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bg_button_dark"
+                android:backgroundTint="@null"
+                android:text="RESTAURER UNE SAUVEGARDE"
+                android:textColor="#FFE1A8"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvBackupStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="Conseil : faites une sauvegarde avant toute désinstallation."
+                android:textColor="#FFB27D"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
             android:background="@drawable/bg_card"
             android:orientation="vertical"
             android:padding="16dp">
