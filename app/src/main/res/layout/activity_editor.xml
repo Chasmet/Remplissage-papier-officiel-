@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="10dp">
+
+    <Button android:id="@+id/btnChoosePdf" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Choisir un PDF officiel" />
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+        <Button android:id="@+id/btnPrevPage" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Page -" />
+        <TextView android:id="@+id/tvPage" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:gravity="center" android:text="Aucun PDF" />
+        <Button android:id="@+id/btnNextPage" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Page +" />
+    </LinearLayout>
+
+    <com.chasmet.remplissagepapierofficiel.PdfOverlayView
+        android:id="@+id/pdfView"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="#E5E7EB" />
+
+    <TextView android:id="@+id/tvPosition" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Touchez le document à l’endroit où écrire." />
+    <EditText android:id="@+id/etOverlayText" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Texte à inscrire" android:singleLine="true" />
+
+    <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content">
+        <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:orientation="horizontal">
+            <Button android:id="@+id/btnAddText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Ajouter" />
+            <Button android:id="@+id/btnUseName" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Nom complet" />
+            <Button android:id="@+id/btnUseAddress" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Adresse" />
+            <Button android:id="@+id/btnClearPage" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Effacer page" />
+        </LinearLayout>
+    </HorizontalScrollView>
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+        <Button android:id="@+id/btnExportPdf" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Exporter PDF" />
+        <Button android:id="@+id/btnExportPng" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Exporter PNG" />
+    </LinearLayout>
+</LinearLayout>
