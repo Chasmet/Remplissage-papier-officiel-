@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <exclude domain="sharedpref" path="settings.xml" />
+    <exclude domain="sharedpref" path="update_state.xml" />
+    <exclude domain="file" path="stability-diagnostics.log" />
+    <exclude domain="file" path="stability-diagnostics.log.old" />
+</full-backup-content>
