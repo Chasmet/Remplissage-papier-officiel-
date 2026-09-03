@@ -34,18 +34,21 @@ jobs:
         id: version
         shell: bash
         run: |
+          set -euo pipefail
           VERSION=$(sed -n "s/.*versionName ['\"]\([^'\"]*\)['\"].*/\1/p" app/build.gradle | head -n 1)
-          if [ -z "$VERSION" ]; then
-            echo "Impossible de lire versionName dans app/build.gradle"
+          VERSION_CODE=$(sed -n "s/.*versionCode[[:space:]]\+\([0-9][0-9]*\).*/\1/p" app/build.gradle | head -n 1)
+          if [ -z "$VERSION" ] || [ -z "$VERSION_CODE" ]; then
+            echo "Impossible de lire versionName/versionCode dans app/build.gradle"
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Version détectée: $VERSION"
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "Version détectée: $VERSION ($VERSION_CODE)"
 
-      - name: Compile check
+      - name: Compile, tests and lint
         run: |
           chmod +x gradlew
-          ./gradlew clean assembleDebug
+          ./gradlew clean testDebugUnitTest lintDebug assembleDebug
 
       - name: Obtain permanent signing key
         shell: bash
@@ -77,10 +80,11 @@ jobs:
           temp = pathlib.Path(os.environ['RUNNER_TEMP'])
           data = json.loads((temp / 'remplissage-vault.json').read_text())
           raw = base64.b64decode(data['keystoreBase64'])
+          password = data['password']
+          if len(raw) < 1000 or not password:
+              raise SystemExit('Matériel de signature reçu invalide')
           (temp / 'remplissage-release.jks').write_bytes(raw)
-          (temp / 'remplissage-password.txt').write_text(data['password'])
-          if len(raw) < 1000:
-              raise SystemExit('Keystore reçu invalide')
+          (temp / 'remplissage-password.txt').write_text(password)
           PY
           chmod 600 "$RUNNER_TEMP/remplissage-release.jks" "$RUNNER_TEMP/remplissage-password.txt"
           rm -f "$RUNNER_TEMP/remplissage-vault.json"
@@ -122,21 +126,31 @@ jobs:
           echo "Signature permanente vérifiée: $ACTUAL"
 
       - name: Prepare signed APK
+        id: apk
         shell: bash
         run: |
-          cp app/build/outputs/apk/release/app-release.apk "Remplissage-papier-officiel-v${{ steps.version.outputs.version }}.apk"
+          set -euo pipefail
+          APK="Remplissage-papier-officiel-v${{ steps.version.outputs.version }}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$APK"
+          SHA=$(sha256sum "$APK" | awk '{print $1}')
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "$SHA  $APK" > "$APK.sha256"
+          echo "APK SHA-256: $SHA"
 
       - name: Upload signed APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: Remplissage-papier-officiel-APK-v${{ steps.version.outputs.version }}
-          path: Remplissage-papier-officiel-v${{ steps.version.outputs.version }}.apk
+          path: |
+            Remplissage-papier-officiel-v${{ steps.version.outputs.version }}.apk
+            Remplissage-papier-officiel-v${{ steps.version.outputs.version }}.apk.sha256
           if-no-files-found: error
 
       - name: Verify this is still the latest commit
         id: latest
         shell: bash
         run: |
+          set -euo pipefail
           git fetch origin main --depth=1
           HEAD_MAIN=$(git rev-parse origin/main)
           if [ "$HEAD_MAIN" = "$GITHUB_SHA" ]; then
@@ -155,14 +169,21 @@ jobs:
           set -euo pipefail
           TAG="v${{ steps.version.outputs.version }}"
           APK="Remplissage-papier-officiel-v${{ steps.version.outputs.version }}.apk"
+          SHA="${{ steps.apk.outputs.sha256 }}"
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$APK" --clobber
+            EXISTING_TARGET=$(gh release view "$TAG" --json targetCommitish --jq '.targetCommitish')
+            if [ "$EXISTING_TARGET" != "$GITHUB_SHA" ]; then
+              echo "Une Release $TAG existe déjà pour un autre commit ($EXISTING_TARGET)."
+              echo "Incrémentez versionName/versionCode avant de republier."
+              exit 1
+            fi
+            gh release upload "$TAG" "$APK" "$APK.sha256" --clobber
           else
-            gh release create "$TAG" "$APK" \
+            gh release create "$TAG" "$APK" "$APK.sha256" \
               --target "$GITHUB_SHA" \
               --title "Remplissage Papier Officiel $TAG" \
-              --notes "Version stabilité $TAG. APK signé avec la clé permanente de l'application pour les futures mises à jour internes."
+              --notes "APK Android signé avec la clé permanente. VersionCode ${{ steps.version.outputs.version_code }}. SHA-256: $SHA. Empreinte certificat: B5:BB:DB:25:21:AC:E4:77:BB:C1:AA:2F:43:1A:DD:E7:06:12:68:A3:8E:26:73:31:FC:B6:7D:1E:97:64:0A:FD."
           fi
 
       - name: Remove signing material
