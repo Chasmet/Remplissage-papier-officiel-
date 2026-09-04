@@ -345,6 +345,29 @@ public final class McpClient {
         });
     }
 
+    public static void deactivateJob(String endpoint, String token, String jobId, Callback callback) {
+        EXECUTOR.execute(() -> {
+            try {
+                JSONObject request = new JSONObject();
+                request.put("action", "deactivate_job");
+                request.put("job_id", jobId);
+
+                HttpResult result = postJson(endpoint, token, request, 12000, 20000);
+                if (result.code < 200 || result.code >= 300) {
+                    callback.onResult(false, "Désactivation refusée (HTTP " + result.code + ")");
+                    return;
+                }
+                JSONObject root = new JSONObject(result.body);
+                callback.onResult(root.optBoolean("ok", false),
+                        root.optBoolean("ok", false)
+                                ? "Document désactivé"
+                                : root.optString("error", "Désactivation refusée"));
+            } catch (Exception e) {
+                callback.onResult(false, "Erreur désactivation MCP : " + safeMessage(e));
+            }
+        });
+    }
+
     public static void acknowledgeApplied(String endpoint, String token, String jobId,
                                           String commandId, JSONArray currentOverlays,
                                           JSONObject profile, int currentPageIndex,
