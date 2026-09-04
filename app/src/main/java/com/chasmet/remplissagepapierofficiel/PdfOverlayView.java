@@ -237,14 +237,39 @@ public class PdfOverlayView extends View {
     private void drawTextOverlays(Canvas canvas) {
         paint.setColor(Color.BLACK);
         paint.setStyle(Paint.Style.FILL);
-        float density = getResources().getDisplayMetrics().density;
+
+        if (bitmap == null || bitmap.isRecycled()) return;
+        float pageScale = Math.min(
+                drawW / Math.max(1f, bitmap.getWidth()),
+                drawH / Math.max(1f, bitmap.getHeight())
+        );
+
         for (TextOverlay overlay : overlays) {
-            float screenTextSize = Math.max(11f * density, overlay.textSize * density * zoomScale * 0.82f);
+            if (overlay == null || overlay.text == null || overlay.text.isEmpty()) continue;
+
+            float screenTextSize = Math.max(1f, overlay.textSize * pageScale);
             paint.setTextSize(screenTextSize);
+            paint.setTextAlign(toPaintAlign(overlay.align));
+
             float x = offsetX + overlay.x * drawW;
             float y = offsetY + overlay.y * drawH;
+
+            if (overlay.isCheckbox()) {
+                Paint.FontMetrics fm = paint.getFontMetrics();
+                y = y - (fm.ascent + fm.descent) * 0.5f;
+                paint.setTextAlign(Paint.Align.CENTER);
+            }
+
             canvas.drawText(overlay.text, x, y, paint);
         }
+
+        paint.setTextAlign(Paint.Align.LEFT);
+    }
+
+    private static Paint.Align toPaintAlign(String align) {
+        if (TextOverlay.ALIGN_CENTER.equals(align)) return Paint.Align.CENTER;
+        if (TextOverlay.ALIGN_RIGHT.equals(align)) return Paint.Align.RIGHT;
+        return Paint.Align.LEFT;
     }
 
     private void drawSelection(Canvas canvas) {
