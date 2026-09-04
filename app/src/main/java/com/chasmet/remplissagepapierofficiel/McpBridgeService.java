@@ -45,7 +45,7 @@ public class McpBridgeService extends Service {
     private static final String CHANNEL_ID = "chatgpt_bridge";
     private static final int NOTIFICATION_ID = 1701;
     private static final String SETTINGS_PREFS = "settings";
-    private static final long POLL_SECONDS = 3L;
+    private static final long POLL_SECONDS = 1L;
 
     private final ScheduledExecutorService scheduler =
             Executors.newSingleThreadScheduledExecutor();
@@ -56,14 +56,17 @@ public class McpBridgeService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        McpBridgeState.setRunning(this, true);
+        AppLog.write(this, "MCP_BRIDGE service démarré", null);
         createNotificationChannel();
-        startForeground(NOTIFICATION_ID, buildNotification("Connexion au document active"));
+        startForeground(NOTIFICATION_ID, buildNotification("Connexion à ChatGPT en cours…"));
         scheduler.scheduleWithFixedDelay(this::pollSafely,
                 0L, POLL_SECONDS, TimeUnit.SECONDS);
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        McpBridgeState.setRunning(this, true);
         startForeground(NOTIFICATION_ID, buildNotification("ChatGPT peut travailler sur le document"));
         return START_STICKY;
     }
@@ -71,6 +74,8 @@ public class McpBridgeService extends Service {
     @Override
     public void onDestroy() {
         stopped = true;
+        McpBridgeState.setRunning(this, false);
+        AppLog.write(this, "MCP_BRIDGE service arrêté", null);
         scheduler.shutdownNow();
         busy.set(false);
         super.onDestroy();
@@ -106,20 +111,33 @@ public class McpBridgeService extends Service {
             return;
         }
 
-        McpClient.getJob(endpoint, token, jobId, new McpClient.JobStatusCallback() {
+        McpClient.waitJob(endpoint, token, jobId, new McpClient.JobStatusCallback() {
             @Override
             public void onStatus(String status, JSONObject fillPlan, String errorMessage) {
+                McpBridgeState.contactOk(
+                        McpBridgeService.this,
+                        "Synchronisé • état serveur : " + status);
+                updateNotification("ChatGPT connecté • " + status);
+                sendStateBroadcast(jobId);
+
                 if (!"ready".equalsIgnoreCase(status) || fillPlan == null) {
                     busy.set(false);
                     return;
                 }
+
+                String commandId = fillPlan.optString("command_id", "");
+                AppLog.write(McpBridgeService.this,
+                        "MCP_BRIDGE commande reçue " + commandId, null);
                 scheduler.execute(() -> processPlan(endpoint, token, jobId, source, fillPlan));
             }
 
             @Override
             public void onError(String message) {
+                McpBridgeState.contactError(McpBridgeService.this, message);
                 AppLog.write(McpBridgeService.this,
-                        "McpBridgeService.getJob: " + message, null);
+                        "MCP_BRIDGE connexion erreur : " + message, null);
+                updateNotification("ChatGPT • erreur de synchronisation");
+                sendStateBroadcast(jobId);
                 busy.set(false);
             }
         });
@@ -140,6 +158,9 @@ public class McpBridgeService extends Service {
                 McpBridgeStore.saveOverlays(this, jobId, current);
                 applyProfileUpdates(fillPlan.optJSONObject("profile_updates"));
                 McpBridgeStore.setLastCommandId(this, commandId);
+                McpBridgeState.commandApplied(this, commandId);
+                AppLog.write(this, "MCP_BRIDGE commande appliquée " + commandId
+                        + " • overlays=" + current.size(), null);
                 sendStateBroadcast(jobId);
             }
 
@@ -165,7 +186,12 @@ public class McpBridgeService extends Service {
                                         sourceFile, finalOverlays);
                                 uploadFinalPdf(endpoint, token, jobId,
                                         sourceFile, finalOverlays);
-                                updateNotification("ChatGPT a appliqué et contrôlé le document");
+                                McpBridgeState.contactOk(
+                                        McpBridgeService.this,
+                                        "Prévisualisation et PDF final envoyés à ChatGPT");
+                                AppLog.write(McpBridgeService.this,
+                                        "MCP_BRIDGE preview + PDF final envoyés", null);
+                                updateNotification("ChatGPT • document synchronisé");
                                 sendStateBroadcast(jobId);
                             } catch (Exception e) {
                                 AppLog.write(McpBridgeService.this,
