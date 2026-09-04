@@ -124,6 +124,7 @@ public class EditorActivity extends Activity {
     private final AtomicInteger renderGeneration = new AtomicInteger();
     private volatile boolean destroyed;
     private volatile boolean exportBusy;
+    private volatile boolean detectFieldsOnNextRender;
 
     private final List<TextOverlay> overlays = new ArrayList<>();
     private final Map<Integer, List<FormField>> detectedFieldsByPage = new HashMap<>();
@@ -391,6 +392,8 @@ public class EditorActivity extends Activity {
     private void renderCurrentPage() {
         final int requestedPage = pageIndex;
         final int generation = renderGeneration.incrementAndGet();
+        final boolean shouldDetectFields = detectFieldsOnNextRender;
+        detectFieldsOnNextRender = false;
         if (getPageCountSafe() <= 0) return;
 
         tvFieldStatus.setText("Chargement…");
@@ -413,6 +416,10 @@ public class EditorActivity extends Activity {
                 }
 
                 if (fields == null) {
+                    fields = new ArrayList<>();
+                }
+
+                if (shouldDetectFields) {
                     try {
                         fields = FormFieldDetector.detect(bitmap, requestedPage);
                     } catch (OutOfMemoryError oom) {
@@ -433,6 +440,8 @@ public class EditorActivity extends Activity {
                 }
 
                 Bitmap finalBitmap = bitmap;
+                int finalPageWidth = rendered.pageWidth;
+                int finalPageHeight = rendered.pageHeight;
                 List<FormField> finalFields = fields;
                 bitmap = null; // Ownership moves to PdfOverlayView on the UI thread.
                 runOnUiThread(() -> {
@@ -440,19 +449,21 @@ public class EditorActivity extends Activity {
                         recycle(finalBitmap);
                         return;
                     }
-                    pdfView.setPage(finalBitmap, currentPageOverlays());
+                    pdfView.setPage(finalBitmap, finalPageWidth, finalPageHeight,
+                            currentPageOverlays());
                     pdfView.setDetectedFields(finalFields);
                     int count = getPageCountSafe();
                     tvPage.setText("Page " + (requestedPage + 1) + " / " + count);
                     updateFieldStatus(finalFields.size());
                     btnDetectFields.setEnabled(true);
 
-                    if (!finalFields.isEmpty()) {
-                        pdfView.selectNextField();
+                    selectedX = 0.10f;
+                    selectedY = 0.10f;
+                    if (finalFields.isEmpty()) {
+                        tvPosition.setText("Placement libre • ChatGPT utilise l’image réelle de la page.");
                     } else {
-                        selectedX = 0.10f;
-                        selectedY = 0.10f;
-                        tvPosition.setText("Aucune ligne détectée • touchez librement le document pour écrire.");
+                        tvPosition.setText(finalFields.size()
+                                + " repère(s) optionnel(s) affiché(s) • aucun recalage automatique.");
                     }
                 });
             } catch (OutOfMemoryError oom) {
@@ -536,7 +547,8 @@ public class EditorActivity extends Activity {
         synchronized (detectedFieldsByPage) {
             detectedFieldsByPage.remove(pageIndex);
         }
-        tvFieldStatus.setText("Analyse…");
+        detectFieldsOnNextRender = true;
+        tvFieldStatus.setText("Analyse optionnelle…");
         renderCurrentPage();
     }
 
@@ -1176,78 +1188,10 @@ public class EditorActivity extends Activity {
         return profile;
     }
 
-    private JSONArray buildMcpFieldHints(int pageCount, JSONObject document) throws Exception {
-        JSONArray hints = new JSONArray();
-        JSONArray pages = document == null ? null : document.optJSONArray("pages");
-
-        for (int i = 0; i < pageCount; i++) {
-            List<FormField> fields;
-            synchronized (detectedFieldsByPage) {
-                List<FormField> cached = detectedFieldsByPage.get(i);
-                fields = cached == null ? null : new ArrayList<>(cached);
-            }
-
-            if (fields == null) {
-                Bitmap bitmap = null;
-                try {
-                    RenderedPage rendered = renderPage(i, false);
-                    bitmap = rendered.bitmap;
-                    fields = FormFieldDetector.detect(bitmap, i);
-                    synchronized (detectedFieldsByPage) {
-                        detectedFieldsByPage.put(i, new ArrayList<>(fields));
-                    }
-                } catch (OutOfMemoryError oom) {
-                    AppLog.write(this, "mcpFieldDetectionOOM page=" + i, oom);
-                    fields = new ArrayList<>();
-                } finally {
-                    recycle(bitmap);
-                }
-            }
-
-            JSONArray blocks = null;
-            if (pages != null) {
-                JSONObject page = pages.optJSONObject(i);
-                if (page != null) blocks = page.optJSONArray("text_blocks");
-            }
-
-            for (int fieldIndex = 0; fieldIndex < fields.size(); fieldIndex++) {
-                FormField field = fields.get(fieldIndex);
-                JSONObject hint = new JSONObject();
-                String fieldId = "p" + i + "_f" + fieldIndex;
-                hint.put("field_id", fieldId);
-                hint.put("page_index", i);
-                hint.put("x", field.x);
-                hint.put("y", field.y);
-                hint.put("width", field.width);
-                hint.put("height", field.height);
-                hint.put("type", field.type.name().toLowerCase(Locale.ROOT));
-                hint.put("confidence", field.confidence);
-                hint.put("anchor_x", field.textX());
-                hint.put("baseline_y", field.textBaselineY());
-                hint.put("snap_required", false);
-                hint.put("advisory_only", true);
-                hint.put("recommended_size",
-                        field.type == FormField.Type.CHECKBOX ? 8 : 8);
-
-                JSONArray nearby = findNearbyText(field, blocks);
-                if (nearby.length() > 0) hint.put("nearby_text", nearby);
-
-                if (field.type == FormField.Type.CHECKBOX) {
-                    hint.put("mark_x", field.centerX());
-                    hint.put("mark_y", field.centerY());
-                    hint.put("recommended_text", "X");
-                    hint.put("semantic_instruction",
-                            "Indice facultatif. Vérifier la vraie case dans l'image de page. "
-                                    + "Le x/y final choisi par ChatGPT ne sera pas déplacé.");
-                } else {
-                    hint.put("semantic_instruction",
-                            "Indice facultatif. Vérifier visuellement le champ. "
-                                    + "field_id n'entraîne aucun déplacement automatique.");
-                }
-                hints.put(hint);
-            }
-        }
-        return hints;
+    private JSONArray buildMcpFieldHints(int pageCount, JSONObject document) {
+        // Architecture visuelle v3: aucune détection géométrique ne décide pour ChatGPT.
+        // Les pages propres + le texte/OCR disponible sont la source de placement.
+        return new JSONArray();
     }
 
     private JSONArray findNearbyText(FormField field, JSONArray blocks) throws Exception {
