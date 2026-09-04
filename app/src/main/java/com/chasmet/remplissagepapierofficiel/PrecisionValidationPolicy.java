@@ -1,0 +1,2 @@
+package com.chasmet.remplissagepapierofficiel;
+public final class PrecisionValidationPolicy { private PrecisionValidationPolicy(){} public static final boolean WARNINGS_MAY_MOVE_OVERLAYS=false; public static final boolean CHATGPT_COORDINATES_REMAIN_AUTHORITATIVE=true; public static final boolean EXPORT_BLOCKS_ON_UNKNOWN_VALUES=false; public static final boolean EXPORT_BLOCKS_ON_SIGNATURE_REQUIRED=false; }
