@@ -16,6 +16,8 @@ public final class McpBridgeState {
     private static final String KEY_LAST_EVENT = "last_event";
     private static final String KEY_LAST_ERROR = "last_error";
     private static final String KEY_LAST_COMMAND = "last_command";
+    private static final String KEY_CHATGPT_CONNECTED = "chatgpt_connected";
+    private static final String KEY_CHATGPT_LAST_SEEN = "chatgpt_last_seen";
 
     private McpBridgeState() {
     }
@@ -63,6 +65,15 @@ public final class McpBridgeState {
                 .apply();
     }
 
+    public static void setChatGptPresence(Context context, boolean connected, long lastSeenMillis) {
+        if (context == null) return;
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_CHATGPT_CONNECTED, connected)
+                .putLong(KEY_CHATGPT_LAST_SEEN, Math.max(0L, lastSeenMillis))
+                .apply();
+    }
+
     public static Snapshot read(Context context) {
         SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         return new Snapshot(
@@ -71,7 +82,9 @@ public final class McpBridgeState {
                 p.getLong(KEY_LAST_CONTACT, 0L),
                 p.getString(KEY_LAST_EVENT, ""),
                 p.getString(KEY_LAST_ERROR, ""),
-                p.getString(KEY_LAST_COMMAND, "")
+                p.getString(KEY_LAST_COMMAND, ""),
+                p.getBoolean(KEY_CHATGPT_CONNECTED, false),
+                p.getLong(KEY_CHATGPT_LAST_SEEN, 0L)
         );
     }
 
@@ -89,11 +102,18 @@ public final class McpBridgeState {
         if (!s.running) {
             return "ChatGPT : pont arrêté • appuyez sur SYNCHRO";
         }
+        boolean chatFresh = s.chatGptConnected
+                && s.chatGptLastSeen > 0L
+                && System.currentTimeMillis() - s.chatGptLastSeen <= 90_000L;
+
+        if (s.connected && fresh && chatFresh) {
+            return "ChatGPT : CONNECTÉ • synchro active";
+        }
         if (s.connected && fresh) {
-            return "ChatGPT : CONNECTÉ • " + age;
+            return "Pont prêt • ouvrez ChatGPT";
         }
         if (s.connected) {
-            return "ChatGPT : contact ancien • " + age;
+            return "ChatGPT : contact serveur ancien • " + age;
         }
         return "ChatGPT : ERREUR • " + age;
     }
@@ -118,7 +138,11 @@ public final class McpBridgeState {
         out.append("Document actif : ").append(job == null || job.isEmpty() ? "aucun" : job).append("\n");
         out.append("Nom document : ").append(McpBridgeStore.getDocumentName(context)).append("\n");
         out.append("Copie PDF interne : ").append(source != null && source.isFile() ? "OK" : "ABSENTE").append("\n");
-        out.append("Dernier contact : ").append(formatDate(s.lastContact)).append("\n");
+        out.append("Présence ChatGPT : ")
+                .append(s.chatGptConnected ? "VUE RÉCEMMENT" : "NON DÉTECTÉE")
+                .append("\n");
+        out.append("Dernier passage ChatGPT : ").append(formatDate(s.chatGptLastSeen)).append("\n");
+        out.append("Dernier contact Android→MCP : ").append(formatDate(s.lastContact)).append("\n");
         out.append("Dernier événement : ").append(empty(s.lastEvent)).append("\n");
         out.append("Dernière commande : ").append(empty(s.lastCommand)).append("\n");
         out.append("Dernière erreur : ").append(empty(s.lastError));
@@ -152,15 +176,20 @@ public final class McpBridgeState {
         public final String lastEvent;
         public final String lastError;
         public final String lastCommand;
+        public final boolean chatGptConnected;
+        public final long chatGptLastSeen;
 
         Snapshot(boolean running, boolean connected, long lastContact,
-                 String lastEvent, String lastError, String lastCommand) {
+                 String lastEvent, String lastError, String lastCommand,
+                 boolean chatGptConnected, long chatGptLastSeen) {
             this.running = running;
             this.connected = connected;
             this.lastContact = lastContact;
             this.lastEvent = lastEvent;
             this.lastError = lastError;
             this.lastCommand = lastCommand;
+            this.chatGptConnected = chatGptConnected;
+            this.chatGptLastSeen = chatGptLastSeen;
         }
     }
 }
