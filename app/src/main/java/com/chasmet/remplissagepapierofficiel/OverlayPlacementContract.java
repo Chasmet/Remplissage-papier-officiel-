@@ -1,0 +1,2 @@
+package com.chasmet.remplissagepapierofficiel;
+public final class OverlayPlacementContract { private OverlayPlacementContract(){} public static void validate(TextOverlay o){PrecisionInvariant.assertOverlay(o);if(o.textSize<1)throw new IllegalArgumentException("size");if(o.isSignature()&&!TextOverlay.STATE_REQUIRES_SIGNATURE.equals(o.dataState)&&o.text!=null&&!o.text.isEmpty())throw new IllegalArgumentException("signature must come from user input channel");} }
