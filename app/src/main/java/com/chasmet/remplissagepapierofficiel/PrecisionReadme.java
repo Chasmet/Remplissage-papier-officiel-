@@ -1,0 +1,2 @@
+package com.chasmet.remplissagepapierofficiel;
+public final class PrecisionReadme { private PrecisionReadme(){} public static String text(){return "ChatGPT decides authoritative normalized coordinates. Android executes them exactly, renders a fresh preview, returns full page plus modified-field crops, accepts local overlay corrections, validates layout without moving content, and exports only the validated revision.";} }
