@@ -695,6 +695,10 @@ public class EditorActivity extends Activity {
     }
 
     private void sendDocumentToChatGpt(String endpoint, String token) {
+        // Démarre le pont pendant que l'activité est encore au premier plan.
+        // Le service attend ensuite la création du job et continue même si
+        // l'utilisateur revient immédiatement dans ChatGPT.
+        startPersistentMcpBridgeService();
         mcpBusy = true;
         tvPosition.setText("Préparation automatique du document pour ChatGPT…");
 
