@@ -50,10 +50,16 @@ public final class AiFillPlan {
 
             float x = normalizeCoordinate(item.optDouble("x", 0.10));
             float y = normalizeCoordinate(item.optDouble("y", 0.10));
-            float size = (float) item.optDouble("size", item.optDouble("textSize", 14.0));
+            float size = (float) item.optDouble("size", item.optDouble("textSize", 8.0));
             size = Math.max(4f, Math.min(144f, size));
+            String align = TextOverlay.normalizeAlign(item.optString("align", TextOverlay.ALIGN_LEFT));
+            float width = normalizeOptionalSize(item.optDouble("width", 0.0));
+            float height = normalizeOptionalSize(item.optDouble("height", 0.0));
 
-            result.add(new TextOverlay(pageIndex, x, y, text, size));
+            result.add(new TextOverlay(
+                    pageIndex, x, y, text, size,
+                    align, kind, width, height
+            ));
         }
         return result;
     }
@@ -66,9 +72,12 @@ public final class AiFillPlan {
 
     public static JSONObject capabilities() throws Exception {
         JSONObject root = new JSONObject();
-        root.put("protocol", "remplissage-papier-officiel.ai-fill.v1");
+        root.put("protocol", "remplissage-papier-officiel.ai-fill.v2");
         root.put("coordinateSystem", "normalized-0-to-1");
         root.put("detectedFieldsAreHintsOnly", true);
+        root.put("fieldIdOptional", true);
+        root.put("applicationSnappingDisabled", true);
+        root.put("coordinatesAreAuthoritative", true);
         root.put("freePlacementAllowed", true);
         root.put("supportsAnyPage", true);
         root.put("supportsCheckboxes", true);
@@ -82,12 +91,15 @@ public final class AiFillPlan {
 
         JSONObject placement = new JSONObject();
         placement.put("page", "1-based page number");
-        placement.put("x", "0.0 to 1.0 from left edge");
-        placement.put("y", "0.0 to 1.0 from top edge; text baseline");
-        placement.put("text", "text to write; use X inside a selected checkbox");
+        placement.put("x", "0.0 to 1.0 from left edge. For text this is the alignment anchor; for checkbox this is the exact center.");
+        placement.put("y", "0.0 to 1.0 from top edge. For text this is the exact baseline; for checkbox this is the exact center.");
+        placement.put("text", "text to write; use X for a selected checkbox");
         placement.put("kind", "text or checkbox");
         placement.put("checked", "true for a selected checkbox");
-        placement.put("size", "text size in points, 4 to 144");
+        placement.put("size", "font size in PDF page units, 4 to 144; choose explicitly");
+        placement.put("align", "left, center or right");
+        placement.put("width", "optional normalized width metadata; application does not auto-fit");
+        placement.put("height", "optional normalized height metadata; application does not auto-fit");
         root.put("placementSchema", placement);
         return root;
     }
@@ -115,11 +127,18 @@ public final class AiFillPlan {
             }
         }
         root.put("detectedFieldHints", hints);
-        root.put("note", "Hints are optional. The AI may place text anywhere on the page.");
+        root.put("note", "Hints are advisory only. Final x/y/size/align from ChatGPT are authoritative and are not snapped by the application.");
         return root;
     }
 
     private static float normalizeCoordinate(double value) {
+        double normalized = value;
+        if (normalized > 1.0 && normalized <= 100.0) normalized /= 100.0;
+        return (float) Math.max(0.0, Math.min(1.0, normalized));
+    }
+
+    private static float normalizeOptionalSize(double value) {
+        if (value <= 0.0) return 0f;
         double normalized = value;
         if (normalized > 1.0 && normalized <= 100.0) normalized /= 100.0;
         return (float) Math.max(0.0, Math.min(1.0, normalized));
