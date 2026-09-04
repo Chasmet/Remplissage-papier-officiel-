@@ -132,16 +132,6 @@
             android:textStyle="bold" />
     </LinearLayout>
 
-    <Button
-        android:id="@+id/btnChatGptFill"
-        android:layout_width="match_parent"
-        android:layout_height="48dp"
-        android:layout_marginTop="7dp"
-        android:background="@drawable/bg_button_orange"
-        android:backgroundTint="@null"
-        android:text="REMPLIR AVEC CHATGPT"
-        android:textColor="#FFFFFF"
-        android:textStyle="bold" />
 
     <FrameLayout
         android:layout_width="match_parent"
