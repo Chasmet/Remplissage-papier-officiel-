@@ -628,7 +628,9 @@ public class EditorActivity extends Activity {
                 }
             }
             if ("clear_page".equals(mode)) incoming.clear();
-        } else if (!"append".equals(mode) && !"update_profile".equals(mode)) {
+        } else if (!"append".equals(mode)
+                && !"update_profile".equals(mode)
+                && !"set_editor_state".equals(mode)) {
             throw new IllegalArgumentException("Mode MCP inconnu : " + mode);
         }
 
@@ -640,6 +642,24 @@ public class EditorActivity extends Activity {
         JSONObject profileUpdates = fillPlan.optJSONObject("profile_updates");
         if (profileUpdates != null) {
             changed += applyProfileUpdates(profileUpdates);
+        }
+
+        JSONObject editorUpdates = fillPlan.optJSONObject("editor_updates");
+        if (editorUpdates != null) {
+            if (editorUpdates.has("text_size")) {
+                currentTextSize = Math.max(4f, Math.min(144f,
+                        (float) editorUpdates.optDouble("text_size", currentTextSize)));
+                updateTextSizeLabel();
+                changed++;
+            }
+            if (editorUpdates.has("page_index")) {
+                int requested = editorUpdates.optInt("page_index", pageIndex);
+                int count = getPageCountSafe();
+                if (count > 0) {
+                    pageIndex = Math.max(0, Math.min(count - 1, requested));
+                    changed++;
+                }
+            }
         }
         return changed;
     }
