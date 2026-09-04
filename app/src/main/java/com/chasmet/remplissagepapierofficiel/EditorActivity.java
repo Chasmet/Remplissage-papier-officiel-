@@ -524,7 +524,7 @@ public class EditorActivity extends Activity {
             try {
                 JSONObject document = buildMcpDocumentContext(uriSnapshot, pageCount);
                 JSONObject profile = buildMcpProfile();
-                JSONArray fieldHints = buildMcpFieldHints(pageCount);
+                JSONArray fieldHints = buildMcpFieldHints(pageCount, document);
 
                 runOnUiThread(() -> tvPosition.setText("Envoi sécurisé vers ChatGPT…"));
 
@@ -663,7 +663,10 @@ public class EditorActivity extends Activity {
         }
         root.put("pages", pages);
         root.put("instruction",
-                "Remplir le formulaire avec le profil fourni. Les champs détectés sont des indices uniquement. "
+                "Remplir le formulaire avec le profil fourni et respecter la structure réelle du formulaire. "
+                        + "Pour les cases à cocher, choisir uniquement les options justifiées par les informations connues, "
+                        + "ne jamais cocher Oui et Non ensemble sauf si le formulaire l'autorise, et placer un X au centre de la case choisie. "
+                        + "Les champs détectés sont des indices géométriques enrichis de texte voisin. "
                         + "Les placements finaux doivent utiliser page_index 0-based et x/y normalisés entre 0 et 1.");
         return root;
     }
@@ -684,8 +687,10 @@ public class EditorActivity extends Activity {
         return profile;
     }
 
-    private JSONArray buildMcpFieldHints(int pageCount) throws Exception {
+    private JSONArray buildMcpFieldHints(int pageCount, JSONObject document) throws Exception {
         JSONArray hints = new JSONArray();
+        JSONArray pages = document == null ? null : document.optJSONArray("pages");
+
         for (int i = 0; i < pageCount; i++) {
             List<FormField> fields;
             synchronized (detectedFieldsByPage) {
@@ -710,6 +715,12 @@ public class EditorActivity extends Activity {
                 }
             }
 
+            JSONArray blocks = null;
+            if (pages != null) {
+                JSONObject page = pages.optJSONObject(i);
+                if (page != null) blocks = page.optJSONArray("text_blocks");
+            }
+
             for (FormField field : fields) {
                 JSONObject hint = new JSONObject();
                 hint.put("page_index", i);
@@ -719,10 +730,92 @@ public class EditorActivity extends Activity {
                 hint.put("height", field.height);
                 hint.put("type", field.type.name().toLowerCase(Locale.ROOT));
                 hint.put("confidence", field.confidence);
+
+                JSONArray nearby = findNearbyText(field, blocks);
+                if (nearby.length() > 0) hint.put("nearby_text", nearby);
+
+                if (field.type == FormField.Type.CHECKBOX) {
+                    hint.put("mark_x", clamp01(field.x + field.width * 0.18f));
+                    hint.put("mark_y", clamp01(field.y + field.height * 0.78f));
+                    hint.put("recommended_text", "X");
+                    hint.put("recommended_size", 9);
+                    hint.put("semantic_instruction",
+                            "Case à cocher : sélectionner seulement l'option correspondant au libellé voisin. "
+                                    + "Pour un groupe Oui/Non, cocher une seule réponse sauf indication contraire.");
+                }
                 hints.put(hint);
             }
         }
         return hints;
+    }
+
+    private JSONArray findNearbyText(FormField field, JSONArray blocks) throws Exception {
+        JSONArray result = new JSONArray();
+        if (blocks == null || blocks.length() == 0) return result;
+
+        final int maxCandidates = 4;
+        List<JSONObject> candidates = new ArrayList<>();
+        List<Float> scores = new ArrayList<>();
+        float fx = field.centerX();
+        float fy = field.centerY();
+
+        for (int i = 0; i < blocks.length(); i++) {
+            JSONObject block = blocks.optJSONObject(i);
+            if (block == null) continue;
+            String text = block.optString("text", "").replaceAll("\\s+", " ").trim();
+            if (text.isEmpty()) continue;
+            if (text.length() > 240) text = text.substring(0, 240);
+
+            float bx = (float) block.optDouble("x", 0.0);
+            float by = (float) block.optDouble("y", 0.0);
+            float bw = (float) block.optDouble("width", 0.0);
+            float bh = (float) block.optDouble("height", 0.0);
+            float bcx = bx + bw * 0.5f;
+            float bcy = by + bh * 0.5f;
+
+            float dx = Math.abs(bcx - fx);
+            float dy = Math.abs(bcy - fy);
+            boolean sameLine = dy <= Math.max(0.025f, field.height * 2.5f);
+            boolean nearbyAbove = by <= field.y && field.y - (by + bh) <= 0.055f
+                    && horizontalOverlap(field.x, field.width, bx, bw) > 0.08f;
+
+            float score;
+            if (field.type == FormField.Type.CHECKBOX) {
+                boolean rightLabel = bx >= field.x - 0.01f && bx <= field.x + 0.30f && sameLine;
+                boolean leftLabel = bx + bw <= field.x + 0.015f
+                        && field.x - (bx + bw) <= 0.22f && sameLine;
+                if (!rightLabel && !leftLabel && !nearbyAbove) continue;
+                score = dy * 4f + dx;
+                if (rightLabel) score -= 0.08f;
+            } else {
+                boolean leftLabel = bx + bw <= field.x + 0.02f
+                        && field.x - (bx + bw) <= 0.25f && sameLine;
+                if (!leftLabel && !nearbyAbove && !(sameLine && dx <= 0.20f)) continue;
+                score = dy * 3f + dx;
+                if (leftLabel) score -= 0.05f;
+                if (nearbyAbove) score -= 0.03f;
+            }
+
+            int pos = 0;
+            while (pos < scores.size() && scores.get(pos) <= score) pos++;
+            scores.add(pos, score);
+            candidates.add(pos, new JSONObject().put("text", text)
+                    .put("x", bx).put("y", by).put("width", bw).put("height", bh));
+            if (candidates.size() > maxCandidates) {
+                candidates.remove(candidates.size() - 1);
+                scores.remove(scores.size() - 1);
+            }
+        }
+
+        for (JSONObject candidate : candidates) result.put(candidate);
+        return result;
+    }
+
+    private static float horizontalOverlap(float ax, float aw, float bx, float bw) {
+        float left = Math.max(ax, bx);
+        float right = Math.min(ax + aw, bx + bw);
+        if (right <= left) return 0f;
+        return (right - left) / Math.max(0.0001f, Math.min(aw, bw));
     }
 
     private void loadMcpJobForDraft() {
