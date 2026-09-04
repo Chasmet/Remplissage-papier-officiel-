@@ -1,0 +1,2 @@
+package com.chasmet.remplissagepapierofficiel;
+public final class QualityProblemCodes { private QualityProblemCodes(){} public static final String TEXT_OUTSIDE_PAGE="text_outside_page"; public static final String TEXT_TOUCHES_LINE="text_touches_line"; public static final String TEXT_TOO_WIDE="text_too_wide"; public static final String OVERLAPS_OVERLAY="overlaps_overlay"; public static final String CHECKBOX_OUTSIDE_BOX="checkbox_outside_box"; public static final String FONT_TOO_LARGE="font_too_large"; }
