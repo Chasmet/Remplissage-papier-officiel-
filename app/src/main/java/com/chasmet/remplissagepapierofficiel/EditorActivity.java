@@ -276,6 +276,12 @@ public class EditorActivity extends Activity {
             }
             sourceUri = uri;
             draftKey = buildDraftKey(uri);
+            if (data != null) {
+                getSharedPreferences(DRAFT_PREFS, MODE_PRIVATE)
+                        .edit()
+                        .remove(draftKey + MCP_JOB_SUFFIX)
+                        .apply();
+            }
             loadMcpJobForDraft();
             pageIndex = 0;
             overlays.clear();
