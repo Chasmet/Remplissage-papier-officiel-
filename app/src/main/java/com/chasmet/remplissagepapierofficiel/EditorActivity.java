@@ -299,6 +299,9 @@ public class EditorActivity extends Activity {
     }
 
     private void openPdf(Uri uri, Intent data, int requestedPage) {
+        if (sourceUri != null && mcpJobId != null && !mcpJobId.isEmpty()) {
+            deactivateCurrentMcpDocument();
+        }
         closePdf();
         try {
             if ((pendingInboundJobId == null || pendingInboundJobId.isEmpty()) && data != null) {
@@ -1562,6 +1565,24 @@ public class EditorActivity extends Activity {
         super.onPause();
     }
 
+    private void deactivateCurrentMcpDocument() {
+        final String jobId = mcpJobId == null ? "" : mcpJobId.trim();
+        if (jobId.isEmpty()) return;
+
+        SharedPreferences settings = getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE);
+        String endpoint = settings.getString("mcpUrl", "").trim();
+        String token = settings.getString("mcpToken", "").trim();
+        if (endpoint.isEmpty()) return;
+
+        McpClient.deactivateJob(endpoint, token, jobId, (success, message) -> {
+            if (!success) {
+                AppLog.write(EditorActivity.this,
+                        "deactivateMcpJob " + jobId + " : " + message,
+                        null);
+            }
+        });
+    }
+
     private void closePdf() {
         renderGeneration.incrementAndGet();
         synchronized (rendererLock) {
@@ -1595,6 +1616,9 @@ public class EditorActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (isFinishing() && mcpJobId != null && !mcpJobId.isEmpty()) {
+            deactivateCurrentMcpDocument();
+        }
         destroyed = true;
         renderGeneration.incrementAndGet();
         if (draftKey != null) saveDraft(true);
