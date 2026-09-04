@@ -69,9 +69,11 @@ public final class McpBridgeStore {
         }
 
         File target = new File(dir, "source.pdf");
-        try (FileInputStream input = new FileInputStream(sourceFile);
-             FileOutputStream output = new FileOutputStream(target, false)) {
-            copyStream(input, output);
+        if (!sourceFile.getCanonicalFile().equals(target.getCanonicalFile())) {
+            try (FileInputStream input = new FileInputStream(sourceFile);
+                 FileOutputStream output = new FileOutputStream(target, false)) {
+                copyStream(input, output);
+            }
         }
 
         saveOverlays(context, jobId, overlays);
