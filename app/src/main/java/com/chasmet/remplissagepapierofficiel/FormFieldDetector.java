@@ -86,6 +86,7 @@ public final class FormFieldDetector {
         List<FormField> result = new ArrayList<>();
         boolean[] consumed = new boolean[merged.size()];
 
+        detectCheckboxes(bitmap, pageIndex, result);
         detectBoxes(bitmap, pageIndex, merged, consumed, result);
         detectUnderlines(bitmap, pageIndex, merged, consumed, result);
 
@@ -94,14 +95,134 @@ public final class FormFieldDetector {
                 .comparingDouble((FormField f) -> f.y)
                 .thenComparingDouble(f -> f.x));
 
-        if (result.size() > 60) {
+        if (result.size() > 160) {
             result.sort((a, b) -> Float.compare(b.confidence, a.confidence));
-            result = new ArrayList<>(result.subList(0, 60));
+            result = new ArrayList<>(result.subList(0, 160));
             result.sort(Comparator
                     .comparingDouble((FormField f) -> f.y)
                     .thenComparingDouble(f -> f.x));
         }
         return result;
+    }
+
+    private static void detectCheckboxes(Bitmap bitmap, int pageIndex, List<FormField> out) {
+        final int width = bitmap.getWidth();
+        final int height = bitmap.getHeight();
+        final int left = Math.max(2, Math.round(width * 0.02f));
+        final int right = Math.min(width - 3, Math.round(width * 0.98f));
+        final int top = Math.max(2, Math.round(height * 0.04f));
+        final int bottom = Math.min(height - 3, Math.round(height * 0.96f));
+        final int minRun = Math.max(7, Math.round(width * 0.006f));
+        final int maxRun = Math.max(minRun + 4, Math.round(width * 0.035f));
+        final int maxGap = Math.max(1, Math.round(width / 1400f));
+
+        List<Segment> raw = new ArrayList<>();
+        int[] row = new int[width];
+
+        for (int y = top; y <= bottom; y++) {
+            bitmap.getPixels(row, 0, width, 0, y, width, 1);
+            int runStart = -1;
+            int lastInk = -1;
+            int gap = 0;
+
+            for (int x = left; x <= right; x++) {
+                if (isRulePixel(row[x])) {
+                    if (runStart < 0) runStart = x;
+                    lastInk = x;
+                    gap = 0;
+                } else if (runStart >= 0) {
+                    gap++;
+                    if (gap > maxGap) {
+                        addRun(raw, runStart, lastInk, y, minRun, maxRun);
+                        runStart = -1;
+                        lastInk = -1;
+                        gap = 0;
+                    }
+                }
+            }
+            if (runStart >= 0) addRun(raw, runStart, lastInk, y, minRun, maxRun);
+        }
+
+        if (raw.isEmpty()) return;
+        List<Segment> merged = mergeRows(raw, height);
+
+        for (int i = 0; i < merged.size(); i++) {
+            Segment topLine = merged.get(i);
+            float nw = topLine.width() / (float) width;
+            if (nw < 0.006f || nw > 0.035f) continue;
+
+            for (int j = i + 1; j < merged.size(); j++) {
+                Segment bottomLine = merged.get(j);
+                float dy = bottomLine.centerY() - topLine.centerY();
+                if (dy > height * 0.040f) break;
+                if (dy < height * 0.005f) continue;
+
+                float bottomWidth = bottomLine.width() / (float) width;
+                if (bottomWidth < 0.006f || bottomWidth > 0.035f) continue;
+
+                float overlap = overlapRatio(topLine, bottomLine);
+                float widthRatio = Math.min(topLine.width(), bottomLine.width())
+                        / (float) Math.max(topLine.width(), bottomLine.width());
+                if (overlap < 0.72f || widthRatio < 0.68f) continue;
+
+                int x1 = Math.max(topLine.x1, bottomLine.x1);
+                int x2 = Math.min(topLine.x2, bottomLine.x2);
+                int y1 = topLine.y2 + 1;
+                int y2 = bottomLine.y1 - 1;
+                if (x2 <= x1 || y2 <= y1) continue;
+
+                float boxW = (x2 - x1 + 1) / (float) width;
+                float boxH = (y2 - y1 + 1) / (float) height;
+                if (boxW < 0.005f || boxW > 0.034f || boxH < 0.004f || boxH > 0.034f) continue;
+
+                float aspect = (boxW * width) / Math.max(1f, boxH * height);
+                if (aspect < 0.55f || aspect > 1.70f) continue;
+
+                float leftSide = verticalBorderEvidence(bitmap, x1, y1, y2);
+                float rightSide = verticalBorderEvidence(bitmap, x2, y1, y2);
+                float sideEvidence = (leftSide + rightSide) * 0.5f;
+                if (sideEvidence < 0.40f) continue;
+
+                int padX = Math.max(6, Math.round(width * 0.08f));
+                int padY = Math.max(5, Math.round(height * 0.012f));
+                float rightContext = inkDensity(bitmap,
+                        Math.min(width - 1, x2 + 2),
+                        Math.max(0, y1 - padY),
+                        Math.min(width - 1, x2 + padX),
+                        Math.min(height - 1, y2 + padY));
+                float leftContext = inkDensity(bitmap,
+                        Math.max(0, x1 - padX),
+                        Math.max(0, y1 - padY),
+                        Math.max(0, x1 - 2),
+                        Math.min(height - 1, y2 + padY));
+                float context = Math.max(rightContext, leftContext);
+                if (context < 0.002f) continue;
+
+                float interior = inkDensity(bitmap,
+                        x1 + Math.max(1, (x2 - x1) / 5),
+                        y1 + Math.max(1, (y2 - y1) / 5),
+                        x2 - Math.max(1, (x2 - x1) / 5),
+                        y2 - Math.max(1, (y2 - y1) / 5));
+
+                float confidence = 0.62f
+                        + Math.min(0.20f, sideEvidence * 0.22f)
+                        + Math.min(0.10f, context * 2.0f);
+                if (interior < 0.12f) confidence += 0.06f;
+                confidence = clamp01(confidence);
+                if (confidence < 0.68f) continue;
+
+                out.add(new FormField(
+                        pageIndex,
+                        x1 / (float) width,
+                        y1 / (float) height,
+                        boxW,
+                        boxH,
+                        FormField.Type.CHECKBOX,
+                        confidence
+                ));
+                break;
+            }
+        }
     }
 
     private static void detectBoxes(Bitmap bitmap, int pageIndex, List<Segment> merged,
