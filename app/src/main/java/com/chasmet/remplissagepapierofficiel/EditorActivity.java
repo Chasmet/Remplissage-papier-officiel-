@@ -81,6 +81,7 @@ public class EditorActivity extends Activity {
     private TextView tvPosition;
     private TextView tvFieldStatus;
     private TextView tvTextSize;
+    private TextView tvChatGptStatus;
     private EditText etOverlayText;
     private Button btnResetZoom;
     private Button btnChoosePdf;
@@ -112,6 +113,7 @@ public class EditorActivity extends Activity {
             String jobId = intent.getStringExtra(McpBridgeService.EXTRA_JOB_ID);
             if (jobId == null || !jobId.equals(mcpJobId)) return;
 
+            refreshMcpStatusUi();
             List<TextOverlay> updated = McpBridgeStore.loadOverlays(
                     EditorActivity.this, jobId);
             overlays.clear();
@@ -119,6 +121,15 @@ public class EditorActivity extends Activity {
             saveDraft(true);
             renderCurrentPage();
             tvPosition.setText("ChatGPT a mis à jour le document • contrôle visuel synchronisé.");
+        }
+    };
+
+    private final Runnable mcpStatusUiRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (destroyed || !mcpForeground) return;
+            refreshMcpStatusUi();
+            mcpHandler.postDelayed(this, 1000L);
         }
     };
 
@@ -246,6 +257,7 @@ public class EditorActivity extends Activity {
         tvPosition = findViewById(R.id.tvPosition);
         tvFieldStatus = findViewById(R.id.tvFieldStatus);
         tvTextSize = findViewById(R.id.tvTextSize);
+        tvChatGptStatus = findViewById(R.id.tvChatGptStatus);
         etOverlayText = findViewById(R.id.etOverlayText);
         btnResetZoom = findViewById(R.id.btnResetZoom);
         btnChoosePdf = findViewById(R.id.btnChoosePdf);
@@ -293,6 +305,9 @@ public class EditorActivity extends Activity {
         findViewById(R.id.btnClearPage).setOnClickListener(v -> clearCurrentPage());
         btnExportPdf.setOnClickListener(v -> requestPdfExport());
         btnExportPng.setOnClickListener(v -> requestPngExport());
+        findViewById(R.id.btnMcpSync).setOnClickListener(v -> manualMcpSync());
+        findViewById(R.id.btnMcpLogs).setOnClickListener(v ->
+                startActivity(new Intent(this, DiagnosticsActivity.class)));
 
         if (savedInstanceState != null) {
             currentTextSize = savedInstanceState.getFloat(STATE_TEXT_SIZE, 14f);
@@ -808,6 +823,55 @@ public class EditorActivity extends Activity {
                 AppLog.write(EditorActivity.this, "ensurePersistentMcpBridge", e);
             }
         });
+    }
+
+    private void manualMcpSync() {
+        if (sourceUri == null || getPageCountSafe() <= 0) {
+            tvChatGptStatus.setText("ChatGPT : choisissez d'abord un PDF");
+            Toast.makeText(this, "Choisissez d’abord un PDF", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        SharedPreferences settings = getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE);
+        String endpoint = settings.getString("mcpUrl", "").trim();
+        if (endpoint.isEmpty()) {
+            tvChatGptStatus.setText("ChatGPT : MCP non configuré");
+            Toast.makeText(this, "Configurez le MCP dans Réglages", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        AppLog.write(this, "MCP_SYNC bouton manuel", null);
+        tvChatGptStatus.setText("ChatGPT : reconnexion et synchronisation…");
+
+        if (mcpJobId == null || mcpJobId.isEmpty()) {
+            autoQueueOrFetchChatGpt();
+            return;
+        }
+
+        File bridgeSource = McpBridgeStore.getSourceFile(this, mcpJobId);
+        if (bridgeSource == null || !bridgeSource.isFile()) {
+            ensurePersistentMcpBridge();
+            return;
+        }
+
+        stopService(new Intent(this, McpBridgeService.class));
+        McpBridgeState.setRunning(this, false);
+        mcpHandler.postDelayed(this::startPersistentMcpBridgeService, 250L);
+    }
+
+    private void refreshMcpStatusUi() {
+        if (tvChatGptStatus == null) return;
+        String text = McpBridgeState.oneLine(this);
+        tvChatGptStatus.setText(text);
+
+        McpBridgeState.Snapshot snapshot = McpBridgeState.read(this);
+        if (snapshot.connected) {
+            tvChatGptStatus.setTextColor(Color.rgb(219, 255, 221));
+        } else if (snapshot.running) {
+            tvChatGptStatus.setTextColor(Color.rgb(255, 225, 168));
+        } else {
+            tvChatGptStatus.setTextColor(Color.rgb(255, 181, 138));
+        }
     }
 
     private void startPersistentMcpBridgeService() {
@@ -1883,7 +1947,9 @@ public class EditorActivity extends Activity {
         }
 
         mcpHandler.removeCallbacks(mcpPollRunnable);
+        mcpHandler.removeCallbacks(mcpStatusUiRunnable);
         mcpHandler.post(mcpPollRunnable);
+        mcpHandler.post(mcpStatusUiRunnable);
     }
 
     @Override
@@ -1910,6 +1976,7 @@ public class EditorActivity extends Activity {
             mcpBackgroundUntilElapsed = 0L;
             mcpHandler.removeCallbacks(mcpPollRunnable);
         }
+        mcpHandler.removeCallbacks(mcpStatusUiRunnable);
         if (draftKey != null) saveDraft(true);
         super.onPause();
     }
