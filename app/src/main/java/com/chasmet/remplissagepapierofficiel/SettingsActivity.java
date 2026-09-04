@@ -23,6 +23,7 @@ public class SettingsActivity extends Activity {
     private TextView tvUpdateDiagnostics;
     private TextView tvPercent;
     private TextView tvMcpStatus;
+    private TextView tvBridgeStatusSettings;
     private TextView tvBackupStatus;
     private ProgressBar progressUpdate;
     private Button btnDownloadUpdate;
@@ -48,6 +49,7 @@ public class SettingsActivity extends Activity {
         tvUpdateDiagnostics = findViewById(R.id.tvUpdateDiagnostics);
         tvPercent = findViewById(R.id.tvPercent);
         tvMcpStatus = findViewById(R.id.tvMcpStatus);
+        tvBridgeStatusSettings = findViewById(R.id.tvBridgeStatusSettings);
         tvBackupStatus = findViewById(R.id.tvBackupStatus);
         progressUpdate = findViewById(R.id.progressUpdate);
         btnDownloadUpdate = findViewById(R.id.btnDownloadUpdate);
@@ -75,6 +77,8 @@ public class SettingsActivity extends Activity {
         btnInstallUpdate.setOnClickListener(v -> installUpdate());
         findViewById(R.id.btnSaveMcp).setOnClickListener(v -> saveMcpSettings());
         findViewById(R.id.btnTestMcp).setOnClickListener(v -> testMcp());
+        findViewById(R.id.btnMcpDiagnostics).setOnClickListener(v ->
+                startActivity(new Intent(this, DiagnosticsActivity.class)));
 
         checkUpdate();
     }
@@ -93,6 +97,7 @@ public class SettingsActivity extends Activity {
         showInstallStatus();
         updateDiagnostics();
         refreshUpdateButtons();
+        refreshBridgeStatus();
 
         if (pendingInstallAfterPermission && UpdateManager.canInstallPackages(this)) {
             pendingInstallAfterPermission = false;
@@ -327,6 +332,13 @@ public class SettingsActivity extends Activity {
             installable = UpdateManager.validateDownloadedApk(this, apk).valid;
         }
         btnInstallUpdate.setEnabled(installable && !installationOpening);
+    }
+
+    private void refreshBridgeStatus() {
+        if (tvBridgeStatusSettings == null) return;
+        tvBridgeStatusSettings.setText(McpBridgeState.oneLine(this)
+                + "\n"
+                + McpBridgeState.diagnostic(this));
     }
 
     private void loadMcpSettings() {
