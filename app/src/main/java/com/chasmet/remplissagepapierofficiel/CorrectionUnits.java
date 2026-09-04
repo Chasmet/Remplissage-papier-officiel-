@@ -1,0 +1,2 @@
+package com.chasmet.remplissagepapierofficiel;
+public final class CorrectionUnits { private CorrectionUnits(){} public static float pixelsToNormalizedX(float px,float pageWidth){if(pageWidth<=0)throw new IllegalArgumentException("pageWidth");return px/pageWidth;} public static float pixelsToNormalizedY(float px,float pageHeight){if(pageHeight<=0)throw new IllegalArgumentException("pageHeight");return px/pageHeight;} }
