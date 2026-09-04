@@ -18,10 +18,17 @@ import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader;
+import com.tom_roush.pdfbox.pdmodel.PDDocument;
+import com.tom_roush.pdfbox.pdmodel.PDPage;
+import com.tom_roush.pdfbox.text.PDFTextStripper;
+import com.tom_roush.pdfbox.text.TextPosition;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -44,6 +51,10 @@ public class EditorActivity extends Activity {
     private static final String STATE_PAGE = "page_index";
     private static final String STATE_TEXT = "overlay_text";
     private static final String STATE_TEXT_SIZE = "text_size";
+    private static final String SETTINGS_PREFS = "settings";
+    private static final String MCP_JOB_SUFFIX = "_mcp_job";
+    private static final int MAX_TEXT_PER_PAGE = 6000;
+    private static final int MAX_TEXT_BLOCKS_PER_PAGE = 180;
 
     private PdfOverlayView pdfView;
     private TextView tvPage;
@@ -56,6 +67,7 @@ public class EditorActivity extends Activity {
     private Button btnDetectFields;
     private Button btnExportPdf;
     private Button btnExportPng;
+    private Button btnChatGptFill;
 
     private Uri sourceUri;
     private ParcelFileDescriptor sourceDescriptor;
@@ -65,6 +77,8 @@ public class EditorActivity extends Activity {
     private float selectedY = 0.10f;
     private float currentTextSize = 14f;
     private String draftKey;
+    private String mcpJobId = "";
+    private volatile boolean mcpBusy;
 
     private final Object rendererLock = new Object();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -87,10 +101,68 @@ public class EditorActivity extends Activity {
         }
     }
 
+    private static final class PositionStripper extends PDFTextStripper {
+        private final JSONArray blocks = new JSONArray();
+        private final int pageIndex;
+        private final float pageWidth;
+        private final float pageHeight;
+
+        PositionStripper(int pageIndex, float pageWidth, float pageHeight) throws IOException {
+            this.pageIndex = pageIndex;
+            this.pageWidth = Math.max(1f, pageWidth);
+            this.pageHeight = Math.max(1f, pageHeight);
+            setSortByPosition(true);
+        }
+
+        @Override
+        protected void writeString(String text, List<TextPosition> positions) {
+            if (blocks.length() >= MAX_TEXT_BLOCKS_PER_PAGE
+                    || positions == null || positions.isEmpty()) return;
+
+            String clean = text == null ? "" : text.replaceAll("\\s+", " ").trim();
+            if (clean.isEmpty()) return;
+            if (clean.length() > 700) clean = clean.substring(0, 700);
+
+            float minX = Float.MAX_VALUE;
+            float minY = Float.MAX_VALUE;
+            float maxX = 0f;
+            float maxY = 0f;
+            float fontSize = 0f;
+
+            for (TextPosition position : positions) {
+                if (position == null) continue;
+                float x = position.getXDirAdj();
+                float y = position.getYDirAdj();
+                float w = Math.max(0f, position.getWidthDirAdj());
+                float h = Math.max(0f, position.getHeightDir());
+                minX = Math.min(minX, x);
+                minY = Math.min(minY, y);
+                maxX = Math.max(maxX, x + w);
+                maxY = Math.max(maxY, y + h);
+                fontSize = Math.max(fontSize, position.getFontSizeInPt());
+            }
+            if (minX == Float.MAX_VALUE || minY == Float.MAX_VALUE) return;
+
+            try {
+                JSONObject block = new JSONObject();
+                block.put("page_index", pageIndex);
+                block.put("text", clean);
+                block.put("x", clamp01(minX / pageWidth));
+                block.put("y", clamp01(minY / pageHeight));
+                block.put("width", clamp01((maxX - minX) / pageWidth));
+                block.put("height", clamp01((maxY - minY) / pageHeight));
+                block.put("font_size", Math.max(1f, fontSize));
+                blocks.put(block);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_editor);
+        PDFBoxResourceLoader.init(getApplicationContext());
 
         pdfView = findViewById(R.id.pdfView);
         tvPage = findViewById(R.id.tvPage);
@@ -103,6 +175,7 @@ public class EditorActivity extends Activity {
         btnDetectFields = findViewById(R.id.btnDetectFields);
         btnExportPdf = findViewById(R.id.btnExportPdf);
         btnExportPng = findViewById(R.id.btnExportPng);
+        btnChatGptFill = findViewById(R.id.btnChatGptFill);
 
         pdfView.setOnPositionSelectedListener((x, y) -> {
             selectedX = x;
@@ -144,6 +217,7 @@ public class EditorActivity extends Activity {
         findViewById(R.id.btnClearPage).setOnClickListener(v -> clearCurrentPage());
         btnExportPdf.setOnClickListener(v -> requestPdfExport());
         btnExportPng.setOnClickListener(v -> requestPngExport());
+        btnChatGptFill.setOnClickListener(v -> sendOrFetchChatGpt());
 
         if (savedInstanceState != null) {
             currentTextSize = savedInstanceState.getFloat(STATE_TEXT_SIZE, 14f);
@@ -205,6 +279,7 @@ public class EditorActivity extends Activity {
             }
             sourceUri = uri;
             draftKey = buildDraftKey(uri);
+            loadMcpJobForDraft();
             pageIndex = 0;
             overlays.clear();
             synchronized (detectedFieldsByPage) {
@@ -410,6 +485,289 @@ public class EditorActivity extends Activity {
             if (overlay.pageIndex == pageIndex) result.add(overlay);
         }
         return result;
+    }
+
+    private void sendOrFetchChatGpt() {
+        if (getPageCountSafe() <= 0 || sourceUri == null) {
+            Toast.makeText(this, "Choisissez d’abord un PDF", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (mcpBusy) return;
+
+        SharedPreferences settings = getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE);
+        String endpoint = settings.getString("mcpUrl", "").trim();
+        String token = settings.getString("mcpToken", "").trim();
+        if (endpoint.isEmpty()) {
+            Toast.makeText(this,
+                    "Configurez d’abord l’URL MCP dans Réglages.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        if (mcpJobId == null || mcpJobId.isEmpty()) {
+            sendDocumentToChatGpt(endpoint, token);
+        } else {
+            fetchChatGptResult(endpoint, token, true);
+        }
+    }
+
+    private void sendDocumentToChatGpt(String endpoint, String token) {
+        mcpBusy = true;
+        btnChatGptFill.setEnabled(false);
+        btnChatGptFill.setText("ANALYSE DU PDF…");
+        tvPosition.setText("Préparation du document pour ChatGPT…");
+
+        final Uri uriSnapshot = sourceUri;
+        final int pageCount = getPageCountSafe();
+
+        worker.execute(() -> {
+            try {
+                JSONObject document = buildMcpDocumentContext(uriSnapshot, pageCount);
+                JSONObject profile = buildMcpProfile();
+                JSONArray fieldHints = buildMcpFieldHints(pageCount);
+
+                runOnUiThread(() -> tvPosition.setText("Envoi sécurisé vers ChatGPT…"));
+
+                McpClient.createJob(endpoint, token, document, profile, fieldHints,
+                        new McpClient.JobCallback() {
+                            @Override
+                            public void onCreated(String jobId, String status) {
+                                runOnUiThread(() -> {
+                                    mcpBusy = false;
+                                    if (destroyed || isFinishing()) return;
+                                    mcpJobId = jobId;
+                                    persistMcpJob();
+                                    btnChatGptFill.setEnabled(true);
+                                    btnChatGptFill.setText("RÉCUPÉRER CHATGPT");
+                                    tvPosition.setText("Document envoyé. Ouvrez ChatGPT et demandez de remplir le document.");
+                                    Toast.makeText(EditorActivity.this,
+                                            "Document envoyé à ChatGPT",
+                                            Toast.LENGTH_LONG).show();
+                                });
+                            }
+
+                            @Override
+                            public void onError(String message) {
+                                runOnUiThread(() -> finishMcpError(message));
+                            }
+                        });
+            } catch (Exception e) {
+                AppLog.write(this, "prepareMcpDocument", e);
+                runOnUiThread(() -> finishMcpError(
+                        "Préparation ChatGPT impossible : " + safeMessage(e)));
+            }
+        });
+    }
+
+    private void fetchChatGptResult(String endpoint, String token, boolean userRequested) {
+        if (mcpJobId == null || mcpJobId.isEmpty() || mcpBusy) return;
+        mcpBusy = true;
+        btnChatGptFill.setEnabled(false);
+        btnChatGptFill.setText("VÉRIFICATION…");
+        if (userRequested) tvPosition.setText("Recherche du remplissage préparé par ChatGPT…");
+
+        final String requestedJob = mcpJobId;
+        McpClient.getJob(endpoint, token, requestedJob, new McpClient.JobStatusCallback() {
+            @Override
+            public void onStatus(String status, JSONObject fillPlan, String errorMessage) {
+                runOnUiThread(() -> {
+                    mcpBusy = false;
+                    if (destroyed || isFinishing() || !requestedJob.equals(mcpJobId)) return;
+
+                    if ("ready".equalsIgnoreCase(status) && fillPlan != null) {
+                        try {
+                            List<TextOverlay> aiOverlays = AiFillPlan.parse(
+                                    fillPlan.toString(), getPageCountSafe());
+                            if (aiOverlays.isEmpty()) {
+                                finishMcpError("ChatGPT a renvoyé un plan vide.");
+                                return;
+                            }
+
+                            overlays.addAll(aiOverlays);
+                            saveDraft(true);
+                            clearPersistedMcpJob();
+                            btnChatGptFill.setEnabled(true);
+                            btnChatGptFill.setText("REMPLIR AVEC CHATGPT");
+                            tvPosition.setText(aiOverlays.size()
+                                    + " éléments ajoutés par ChatGPT • vérifiez puis exportez le PDF.");
+                            renderCurrentPage();
+                            Toast.makeText(EditorActivity.this,
+                                    "Remplissage ChatGPT appliqué",
+                                    Toast.LENGTH_LONG).show();
+                        } catch (Exception e) {
+                            AppLog.write(EditorActivity.this, "applyMcpPlan", e);
+                            finishMcpError("Plan ChatGPT invalide : " + safeMessage(e));
+                        }
+                        return;
+                    }
+
+                    if ("failed".equalsIgnoreCase(status)
+                            || "cancelled".equalsIgnoreCase(status)) {
+                        clearPersistedMcpJob();
+                        btnChatGptFill.setEnabled(true);
+                        btnChatGptFill.setText("REMPLIR AVEC CHATGPT");
+                        tvPosition.setText(errorMessage == null || errorMessage.trim().isEmpty()
+                                ? "Le remplissage ChatGPT a échoué. Vous pouvez réessayer."
+                                : errorMessage);
+                        return;
+                    }
+
+                    btnChatGptFill.setEnabled(true);
+                    btnChatGptFill.setText("RÉCUPÉRER CHATGPT");
+                    tvPosition.setText("ChatGPT n’a pas encore terminé. Demandez-lui de remplir le document puis revenez ici.");
+                });
+            }
+
+            @Override
+            public void onError(String message) {
+                runOnUiThread(() -> finishMcpError(message));
+            }
+        });
+    }
+
+    private JSONObject buildMcpDocumentContext(Uri uri, int expectedPageCount) throws Exception {
+        JSONObject root = new JSONObject();
+        root.put("name", uri == null || uri.getLastPathSegment() == null
+                ? "document.pdf" : uri.getLastPathSegment());
+        root.put("page_count", expectedPageCount);
+        root.put("capabilities", AiFillPlan.capabilities());
+
+        JSONArray pages = new JSONArray();
+        try (InputStream input = getContentResolver().openInputStream(uri)) {
+            if (input == null) throw new IOException("PDF inaccessible");
+            try (PDDocument document = PDDocument.load(input)) {
+                int count = Math.min(expectedPageCount, document.getNumberOfPages());
+                for (int i = 0; i < count; i++) {
+                    PDPage page = document.getPage(i);
+                    float width = Math.max(1f, page.getMediaBox().getWidth());
+                    float height = Math.max(1f, page.getMediaBox().getHeight());
+
+                    PositionStripper stripper = new PositionStripper(i, width, height);
+                    stripper.setStartPage(i + 1);
+                    stripper.setEndPage(i + 1);
+                    String text = stripper.getText(document);
+                    if (text == null) text = "";
+                    text = text.trim();
+                    if (text.length() > MAX_TEXT_PER_PAGE) {
+                        text = text.substring(0, MAX_TEXT_PER_PAGE);
+                    }
+
+                    JSONObject pageJson = new JSONObject();
+                    pageJson.put("page_index", i);
+                    pageJson.put("page_number", i + 1);
+                    pageJson.put("plain_text", text);
+                    pageJson.put("text_blocks", stripper.blocks);
+                    pages.put(pageJson);
+                }
+            }
+        }
+        root.put("pages", pages);
+        root.put("instruction",
+                "Remplir le formulaire avec le profil fourni. Les champs détectés sont des indices uniquement. "
+                        + "Les placements finaux doivent utiliser page_index 0-based et x/y normalisés entre 0 et 1.");
+        return root;
+    }
+
+    private JSONObject buildMcpProfile() throws Exception {
+        SharedPreferences p = getSharedPreferences(ProfileActivity.PREFS, MODE_PRIVATE);
+        JSONObject profile = new JSONObject();
+        String[] keys = new String[]{
+                "firstName", "lastName", "birthDate", "birthPlace",
+                "address", "postalCode", "city", "phone", "email", "otherId"
+        };
+        for (String key : keys) {
+            String value = p.getString(key, "");
+            if (value != null && !value.trim().isEmpty()) {
+                profile.put(key, value.trim());
+            }
+        }
+        return profile;
+    }
+
+    private JSONArray buildMcpFieldHints(int pageCount) throws Exception {
+        JSONArray hints = new JSONArray();
+        for (int i = 0; i < pageCount; i++) {
+            List<FormField> fields;
+            synchronized (detectedFieldsByPage) {
+                List<FormField> cached = detectedFieldsByPage.get(i);
+                fields = cached == null ? null : new ArrayList<>(cached);
+            }
+
+            if (fields == null) {
+                Bitmap bitmap = null;
+                try {
+                    RenderedPage rendered = renderPage(i, false);
+                    bitmap = rendered.bitmap;
+                    fields = FormFieldDetector.detect(bitmap, i);
+                    synchronized (detectedFieldsByPage) {
+                        detectedFieldsByPage.put(i, new ArrayList<>(fields));
+                    }
+                } catch (OutOfMemoryError oom) {
+                    AppLog.write(this, "mcpFieldDetectionOOM page=" + i, oom);
+                    fields = new ArrayList<>();
+                } finally {
+                    recycle(bitmap);
+                }
+            }
+
+            for (FormField field : fields) {
+                JSONObject hint = new JSONObject();
+                hint.put("page_index", i);
+                hint.put("x", field.x);
+                hint.put("y", field.y);
+                hint.put("width", field.width);
+                hint.put("height", field.height);
+                hint.put("type", field.type.name().toLowerCase(Locale.ROOT));
+                hint.put("confidence", field.confidence);
+                hints.put(hint);
+            }
+        }
+        return hints;
+    }
+
+    private void loadMcpJobForDraft() {
+        if (draftKey == null) {
+            mcpJobId = "";
+            return;
+        }
+        mcpJobId = getSharedPreferences(DRAFT_PREFS, MODE_PRIVATE)
+                .getString(draftKey + MCP_JOB_SUFFIX, "");
+        if (mcpJobId == null) mcpJobId = "";
+        if (btnChatGptFill != null) {
+            btnChatGptFill.setText(mcpJobId.isEmpty()
+                    ? "REMPLIR AVEC CHATGPT"
+                    : "RÉCUPÉRER CHATGPT");
+        }
+    }
+
+    private void persistMcpJob() {
+        if (draftKey == null || mcpJobId == null || mcpJobId.isEmpty()) return;
+        getSharedPreferences(DRAFT_PREFS, MODE_PRIVATE)
+                .edit()
+                .putString(draftKey + MCP_JOB_SUFFIX, mcpJobId)
+                .apply();
+    }
+
+    private void clearPersistedMcpJob() {
+        if (draftKey != null) {
+            getSharedPreferences(DRAFT_PREFS, MODE_PRIVATE)
+                    .edit()
+                    .remove(draftKey + MCP_JOB_SUFFIX)
+                    .apply();
+        }
+        mcpJobId = "";
+    }
+
+    private void finishMcpError(String message) {
+        mcpBusy = false;
+        if (btnChatGptFill != null) {
+            btnChatGptFill.setEnabled(true);
+            btnChatGptFill.setText(mcpJobId == null || mcpJobId.isEmpty()
+                    ? "REMPLIR AVEC CHATGPT"
+                    : "RÉCUPÉRER CHATGPT");
+        }
+        tvPosition.setText(message);
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
     }
 
     private void addText() {
@@ -761,6 +1119,17 @@ public class EditorActivity extends Activity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        if (draftKey != null && mcpJobId != null && !mcpJobId.isEmpty() && !mcpBusy) {
+            SharedPreferences settings = getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE);
+            String endpoint = settings.getString("mcpUrl", "").trim();
+            String token = settings.getString("mcpToken", "").trim();
+            if (!endpoint.isEmpty()) fetchChatGptResult(endpoint, token, false);
+        }
+    }
+
+    @Override
     protected void onPause() {
         if (draftKey != null) saveDraft(true);
         super.onPause();
@@ -789,6 +1158,12 @@ public class EditorActivity extends Activity {
         if (pdfView != null) pdfView.setPage(null, null);
         sourceUri = null;
         draftKey = null;
+        mcpJobId = "";
+        mcpBusy = false;
+        if (btnChatGptFill != null) {
+            btnChatGptFill.setEnabled(true);
+            btnChatGptFill.setText("REMPLIR AVEC CHATGPT");
+        }
         synchronized (detectedFieldsByPage) {
             detectedFieldsByPage.clear();
         }
