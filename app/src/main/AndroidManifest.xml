@@ -17,6 +17,12 @@
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="false">
 
+        <provider
+            android:name=".LiveEditorInitProvider"
+            android:authorities="${applicationId}.liveeditorinit"
+            android:exported="false"
+            android:initOrder="100" />
+
         <service
             android:name=".McpBridgeService"
             android:exported="false"
