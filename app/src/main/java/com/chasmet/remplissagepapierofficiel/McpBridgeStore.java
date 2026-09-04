@@ -43,15 +43,16 @@ public final class McpBridgeStore {
         copyUriToFile(context, sourceUri, source);
         saveOverlays(context, jobId, overlays);
 
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit()
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        boolean sameJob = jobId.equals(prefs.getString(KEY_ACTIVE_JOB, ""));
+        SharedPreferences.Editor edit = prefs.edit()
                 .putString(KEY_ACTIVE_JOB, jobId)
                 .putString(KEY_SOURCE_PATH, source.getAbsolutePath())
                 .putString(KEY_DOCUMENT_NAME,
                         documentName == null || documentName.trim().isEmpty()
-                                ? "document.pdf" : documentName.trim())
-                .remove(KEY_LAST_COMMAND)
-                .apply();
+                                ? "document.pdf" : documentName.trim());
+        if (!sameJob) edit.remove(KEY_LAST_COMMAND);
+        edit.apply();
     }
 
     public static synchronized void attachExistingFile(Context context, String jobId, File sourceFile,
@@ -74,15 +75,16 @@ public final class McpBridgeStore {
         }
 
         saveOverlays(context, jobId, overlays);
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit()
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        boolean sameJob = jobId.equals(prefs.getString(KEY_ACTIVE_JOB, ""));
+        SharedPreferences.Editor edit = prefs.edit()
                 .putString(KEY_ACTIVE_JOB, jobId)
                 .putString(KEY_SOURCE_PATH, target.getAbsolutePath())
                 .putString(KEY_DOCUMENT_NAME,
                         documentName == null || documentName.trim().isEmpty()
-                                ? "document.pdf" : documentName.trim())
-                .remove(KEY_LAST_COMMAND)
-                .apply();
+                                ? "document.pdf" : documentName.trim());
+        if (!sameJob) edit.remove(KEY_LAST_COMMAND);
+        edit.apply();
     }
 
     public static String getActiveJobId(Context context) {
