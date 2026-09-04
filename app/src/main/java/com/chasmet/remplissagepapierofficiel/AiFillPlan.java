@@ -51,7 +51,7 @@ public final class AiFillPlan {
             float x = normalizeCoordinate(item.optDouble("x", 0.10));
             float y = normalizeCoordinate(item.optDouble("y", 0.10));
             float size = (float) item.optDouble("size", item.optDouble("textSize", 14.0));
-            size = Math.max(8f, Math.min(40f, size));
+            size = Math.max(4f, Math.min(144f, size));
 
             result.add(new TextOverlay(pageIndex, x, y, text, size));
         }
@@ -72,6 +72,12 @@ public final class AiFillPlan {
         root.put("freePlacementAllowed", true);
         root.put("supportsAnyPage", true);
         root.put("supportsCheckboxes", true);
+        root.put("supportsAppend", true);
+        root.put("supportsReplaceDocument", true);
+        root.put("supportsClearDocument", true);
+        root.put("supportsReplacePage", true);
+        root.put("supportsClearPage", true);
+        root.put("supportsProfileReadWrite", true);
 
         JSONObject placement = new JSONObject();
         placement.put("page", "1-based page number");
@@ -80,7 +86,7 @@ public final class AiFillPlan {
         placement.put("text", "text to write; use X inside a selected checkbox");
         placement.put("kind", "text or checkbox");
         placement.put("checked", "true for a selected checkbox");
-        placement.put("size", "text size in points, 8 to 40");
+        placement.put("size", "text size in points, 4 to 144");
         root.put("placementSchema", placement);
         return root;
     }
