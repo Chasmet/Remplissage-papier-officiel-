@@ -1,0 +1,2 @@
+package com.chasmet.remplissagepapierofficiel;
+public final class PrecisionFieldTypes { private PrecisionFieldTypes(){} public static final String TEXT_LINE="text_line";public static final String CHECKBOX="checkbox";public static final String TABLE="table";public static final String MULTILINE="multiline";public static final String DATE="date";public static final String SIGNATURE="signature";public static final String PHONE="phone";public static final String EMAIL="email";public static final String IDENTITY="identity";public static final String ADDRESS="address"; }
