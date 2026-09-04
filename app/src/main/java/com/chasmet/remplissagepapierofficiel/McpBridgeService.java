@@ -483,10 +483,8 @@ public class McpBridgeService extends Service {
     }
 
     private void updateNotification(String text) {
-        NotificationManager manager =
-                (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (manager != null) {
-            manager.notify(NOTIFICATION_ID, buildNotification(text));
-        }
+        // startForeground peut mettre à jour la notification du service sans
+        // dépendre d'un appel NotificationManager.notify séparé.
+        startForeground(NOTIFICATION_ID, buildNotification(text));
     }
 }
