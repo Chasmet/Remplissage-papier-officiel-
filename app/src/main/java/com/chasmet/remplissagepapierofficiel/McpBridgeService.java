@@ -114,6 +114,22 @@ public class McpBridgeService extends Service {
         McpClient.waitJob(endpoint, token, jobId, new McpClient.JobStatusCallback() {
             @Override
             public void onStatus(String status, JSONObject fillPlan, String errorMessage) {
+                if ("cancelled".equalsIgnoreCase(status)
+                        || "failed".equalsIgnoreCase(status)
+                        || "error".equalsIgnoreCase(status)) {
+                    String reason = errorMessage == null || errorMessage.trim().isEmpty()
+                            ? "Document MCP invalide : " + status
+                            : errorMessage.trim();
+                    McpBridgeState.contactError(McpBridgeService.this, reason);
+                    AppLog.write(McpBridgeService.this,
+                            "MCP_BRIDGE job invalide : " + reason, null);
+                    McpBridgeStore.clearActiveJob(McpBridgeService.this, jobId);
+                    sendStateBroadcast(jobId);
+                    busy.set(false);
+                    stopSelf();
+                    return;
+                }
+
                 McpBridgeState.contactOk(
                         McpBridgeService.this,
                         "Synchronisé • état serveur : " + status);
@@ -133,12 +149,24 @@ public class McpBridgeService extends Service {
 
             @Override
             public void onError(String message) {
+                String lower = message == null ? "" : message.toLowerCase();
+                boolean stale = lower.contains("404")
+                        || lower.contains("introuvable")
+                        || lower.contains("expir")
+                        || lower.contains("annul");
                 McpBridgeState.contactError(McpBridgeService.this, message);
                 AppLog.write(McpBridgeService.this,
                         "MCP_BRIDGE connexion erreur : " + message, null);
+
+                if (stale) {
+                    McpBridgeStore.clearActiveJob(McpBridgeService.this, jobId);
+                }
+
                 updateNotification("ChatGPT • erreur de synchronisation");
                 sendStateBroadcast(jobId);
                 busy.set(false);
+
+                if (stale) stopSelf();
             }
         });
     }
