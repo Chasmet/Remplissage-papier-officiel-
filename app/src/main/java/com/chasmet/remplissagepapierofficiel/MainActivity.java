@@ -19,6 +19,8 @@ public class MainActivity extends Activity {
     private static final String SETTINGS_PREFS = "settings";
     private static final String UI_PREFS = "mcp_ui";
     private static final String LAST_OPENED_CHAT_JOB = "last_opened_chat_job";
+    private static final String LAST_OPENED_CHAT_NAME = "last_opened_chat_name";
+    private static final String LAST_OPENED_CHAT_PATH = "last_opened_chat_path";
 
     private boolean updateDialogShown = false;
     private boolean inboxCheckRunning = false;
@@ -36,7 +38,7 @@ public class MainActivity extends Activity {
 
         btnNewDocument.setOnClickListener(v -> startActivity(new Intent(this, EditorActivity.class)));
         btnImportPdf.setOnClickListener(v -> startActivity(new Intent(this, EditorActivity.class)));
-        btnDocuments.setOnClickListener(v -> Toast.makeText(this, "Mes documents sera enrichi dans la prochaine amélioration.", Toast.LENGTH_SHORT).show());
+        btnDocuments.setOnClickListener(v -> openLastChatGptDocumentOrCheckInbox());
         btnProfile.setOnClickListener(v -> startActivity(new Intent(this, ProfileActivity.class)));
         btnSettings.setOnClickListener(v -> startActivity(new Intent(this, SettingsActivity.class)));
 
@@ -98,7 +100,7 @@ public class MainActivity extends Activity {
 
     private void downloadChatGptDocument(String jobId, String name, String downloadUrl) {
         Toast.makeText(this, "Téléchargement du PDF…", Toast.LENGTH_SHORT).show();
-        File target = new File(getCacheDir(), "chatgpt-" + jobId + ".pdf");
+        File target = new File(new File(getFilesDir(), "mcp-inbox"), "chatgpt-" + jobId + ".pdf");
 
         McpClient.downloadPdf(downloadUrl, target, (success, message) -> runOnUiThread(() -> {
             if (!success) {
@@ -115,6 +117,8 @@ public class MainActivity extends Activity {
                 getSharedPreferences(UI_PREFS, MODE_PRIVATE)
                         .edit()
                         .putString(LAST_OPENED_CHAT_JOB, jobId)
+                        .putString(LAST_OPENED_CHAT_NAME, name)
+                        .putString(LAST_OPENED_CHAT_PATH, target.getAbsolutePath())
                         .apply();
 
                 Intent intent = new Intent(MainActivity.this, EditorActivity.class);
@@ -129,6 +133,36 @@ public class MainActivity extends Activity {
                         Toast.LENGTH_LONG).show();
             }
         }));
+    }
+
+    private void openLastChatGptDocumentOrCheckInbox() {
+        SharedPreferences prefs = getSharedPreferences(UI_PREFS, MODE_PRIVATE);
+        String jobId = prefs.getString(LAST_OPENED_CHAT_JOB, "");
+        String name = prefs.getString(LAST_OPENED_CHAT_NAME, "document.pdf");
+        String path = prefs.getString(LAST_OPENED_CHAT_PATH, "");
+
+        if (jobId != null && !jobId.isEmpty() && path != null && !path.isEmpty()) {
+            File file = new File(path);
+            if (file.isFile()) {
+                try {
+                    Uri uri = FileProvider.getUriForFile(
+                            this,
+                            BuildConfig.APPLICATION_ID + ".fileprovider",
+                            file);
+                    Intent intent = new Intent(this, EditorActivity.class);
+                    intent.setData(uri);
+                    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    intent.putExtra(EditorActivity.EXTRA_MCP_JOB_ID, jobId);
+                    intent.putExtra(EditorActivity.EXTRA_MCP_DOCUMENT_NAME, name);
+                    startActivity(intent);
+                    return;
+                } catch (Exception ignored) {
+                }
+            }
+        }
+
+        Toast.makeText(this, "Recherche d’un document ChatGPT…", Toast.LENGTH_SHORT).show();
+        checkChatGptInbox();
     }
 
     private void checkForUpdateOnLaunch() {
