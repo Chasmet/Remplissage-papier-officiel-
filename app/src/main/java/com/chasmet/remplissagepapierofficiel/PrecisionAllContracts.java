@@ -1,0 +1,3 @@
+package com.chasmet.remplissagepapierofficiel;
+import org.json.JSONObject;
+public final class PrecisionAllContracts { private PrecisionAllContracts(){} public static JSONObject json() throws Exception {return new JSONObject().put("coordinates",PrecisionCoordinates.json()).put("baseline",PrecisionBaseline.json()).put("preview",PrecisionPreviewContract.json()).put("validation",PrecisionValidationContract.json()).put("field_detection",PrecisionFieldDetection.json()).put("text_metrics",PrecisionTextMetricsContract.json()).put("checkbox",PrecisionCheckbox.json()).put("date",PrecisionDate.json()).put("signature",PrecisionSignature.json()).put("no_guess",PrecisionNoGuessPolicy.json());} }
