@@ -1,0 +1,2 @@
+package com.chasmet.remplissagepapierofficiel;
+public final class OverlayStatePolicy { private OverlayStatePolicy(){} public static boolean requiresHumanInput(TextOverlay o){return o!=null&&(TextOverlay.STATE_REQUIRES_USER.equals(o.dataState)||TextOverlay.STATE_REQUIRES_SIGNATURE.equals(o.dataState));} public static boolean known(TextOverlay o){return o!=null&&TextOverlay.STATE_KNOWN.equals(o.dataState);} }
