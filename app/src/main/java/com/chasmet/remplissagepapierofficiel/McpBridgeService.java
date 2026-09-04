@@ -133,7 +133,8 @@ public class McpBridgeService extends Service {
                 McpBridgeState.contactOk(
                         McpBridgeService.this,
                         "Synchronisé • état serveur : " + status);
-                updateNotification("ChatGPT connecté • " + status);
+                updateNotification("Pont MCP actif • " + status);
+                refreshChatGptPresence(endpoint, token, jobId);
                 sendStateBroadcast(jobId);
 
                 if (!"ready".equalsIgnoreCase(status) || fillPlan == null) {
@@ -169,6 +170,41 @@ public class McpBridgeService extends Service {
                 if (stale) stopSelf();
             }
         });
+    }
+
+    private void refreshChatGptPresence(String endpoint, String token, String jobId) {
+        McpClient.getBridgeStatus(endpoint, token, jobId,
+                new McpClient.BridgeStatusCallback() {
+                    @Override
+                    public void onStatus(boolean chatGptConnected, long chatGptLastSeenMs,
+                                         String jobStatus, String message) {
+                        McpBridgeState.Snapshot before =
+                                McpBridgeState.read(McpBridgeService.this);
+                        McpBridgeState.setChatGptPresence(
+                                McpBridgeService.this,
+                                chatGptConnected,
+                                chatGptLastSeenMs);
+
+                        if (before.chatGptConnected != chatGptConnected) {
+                            AppLog.write(McpBridgeService.this,
+                                    chatGptConnected
+                                            ? "MCP_BRIDGE ChatGPT vient de se connecter"
+                                            : "MCP_BRIDGE ChatGPT non détecté récemment",
+                                    null);
+                        }
+
+                        updateNotification(chatGptConnected
+                                ? "ChatGPT connecté • synchronisation active"
+                                : "Pont prêt • attente de ChatGPT");
+                        sendStateBroadcast(jobId);
+                    }
+
+                    @Override
+                    public void onError(String message) {
+                        AppLog.write(McpBridgeService.this,
+                                "MCP_BRIDGE état présence ChatGPT : " + message, null);
+                    }
+                });
     }
 
     private void processPlan(String endpoint, String token, String jobId,
