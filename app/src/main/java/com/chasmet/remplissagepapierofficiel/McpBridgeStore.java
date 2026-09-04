@@ -124,6 +124,7 @@ public final class McpBridgeStore {
             for (TextOverlay overlay : overlays) {
                 if (overlay == null || overlay.text == null || overlay.text.isEmpty()) continue;
                 JSONObject item = new JSONObject();
+                item.put("overlay_id", overlay.overlayId);
                 item.put("page_index", overlay.pageIndex);
                 item.put("x", overlay.x);
                 item.put("y", overlay.y);
@@ -131,6 +132,7 @@ public final class McpBridgeStore {
                 item.put("size", overlay.textSize);
                 item.put("align", overlay.align);
                 item.put("kind", overlay.kind);
+                item.put("data_state", overlay.dataState);
                 if (overlay.width > 0f) item.put("width", overlay.width);
                 if (overlay.height > 0f) item.put("height", overlay.height);
                 array.put(item);
@@ -168,9 +170,10 @@ public final class McpBridgeStore {
                 if (text.isEmpty()) continue;
 
                 result.add(new TextOverlay(
+                        item.optString("overlay_id", item.optString("id", "")),
                         Math.max(0, item.optInt("page_index", 0)),
-                        clamp01((float) item.optDouble("x", 0.1)),
-                        clamp01((float) item.optDouble("y", 0.1)),
+                        strict01((float) item.optDouble("x", 0.1), "x"),
+                        strict01((float) item.optDouble("y", 0.1), "y"),
                         text,
                         Math.max(4f, Math.min(144f,
                                 (float) item.optDouble("size", 8.0))),
@@ -178,14 +181,65 @@ public final class McpBridgeStore {
                                 "align", TextOverlay.ALIGN_LEFT)),
                         TextOverlay.normalizeKind(item.optString(
                                 "kind", TextOverlay.KIND_TEXT)),
-                        clamp01((float) item.optDouble("width", 0.0)),
-                        clamp01((float) item.optDouble("height", 0.0))
+                        optional01((float) item.optDouble("width", 0.0)),
+                        optional01((float) item.optDouble("height", 0.0)),
+                        TextOverlay.normalizeDataState(item.optString(
+                                "data_state", TextOverlay.STATE_KNOWN))
                 ));
             }
         } catch (Exception e) {
             AppLog.write(context, "McpBridgeStore.loadOverlays", e);
         }
         return result;
+    }
+
+    public static synchronized TextOverlay findOverlay(Context context, String jobId, String overlayId) {
+        if (overlayId == null || overlayId.trim().isEmpty()) return null;
+        for (TextOverlay overlay : loadOverlays(context, jobId)) {
+            if (overlayId.equals(overlay.overlayId)) return overlay;
+        }
+        return null;
+    }
+
+    public static synchronized boolean updateOverlay(Context context, String jobId,
+                                                     String overlayId,
+                                                     Float x, Float y,
+                                                     Float xDelta, Float yDelta,
+                                                     Float size, String align,
+                                                     String text) throws Exception {
+        if (overlayId == null || overlayId.trim().isEmpty()) {
+            throw new IllegalArgumentException("overlay_id manquant");
+        }
+        List<TextOverlay> overlays = loadOverlays(context, jobId);
+        boolean changed = false;
+        List<TextOverlay> out = new ArrayList<>();
+        for (TextOverlay overlay : overlays) {
+            if (!overlayId.equals(overlay.overlayId)) {
+                out.add(overlay);
+                continue;
+            }
+            float targetX = x == null ? overlay.x : x;
+            float targetY = y == null ? overlay.y : y;
+            if (xDelta != null) targetX += xDelta;
+            if (yDelta != null) targetY += yDelta;
+            out.add(overlay.withChanges(targetX, targetY, size, align, text));
+            changed = true;
+        }
+        if (changed) saveOverlays(context, jobId, out);
+        return changed;
+    }
+
+    public static synchronized boolean deleteOverlay(Context context, String jobId,
+                                                     String overlayId) throws Exception {
+        if (overlayId == null || overlayId.trim().isEmpty()) {
+            throw new IllegalArgumentException("overlay_id manquant");
+        }
+        List<TextOverlay> overlays = loadOverlays(context, jobId);
+        int before = overlays.size();
+        overlays.removeIf(overlay -> overlayId.equals(overlay.overlayId));
+        if (overlays.size() == before) return false;
+        saveOverlays(context, jobId, overlays);
+        return true;
     }
 
     public static String getLastCommandId(Context context) {
@@ -244,7 +298,15 @@ public final class McpBridgeStore {
         output.flush();
     }
 
-    private static float clamp01(float value) {
-        return Math.max(0f, Math.min(1f, value));
+    private static float strict01(float value, String name) {
+        if (!Float.isFinite(value) || value < 0f || value > 1f) {
+            throw new IllegalArgumentException(name + " hors limites");
+        }
+        return value;
+    }
+
+    private static float optional01(float value) {
+        if (value <= 0f) return 0f;
+        return strict01(value, "width/height");
     }
 }
