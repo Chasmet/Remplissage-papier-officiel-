@@ -29,6 +29,8 @@ import com.tom_roush.pdfbox.text.TextPosition;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -45,6 +47,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class EditorActivity extends Activity {
+    public static final String EXTRA_MCP_JOB_ID = "mcp_job_id";
+    public static final String EXTRA_MCP_DOCUMENT_NAME = "mcp_document_name";
+
     private static final int REQ_PICK_PDF = 100;
     private static final int REQ_CREATE_PDF = 101;
     private static final int REQ_CREATE_PNG = 102;
@@ -82,6 +87,9 @@ public class EditorActivity extends Activity {
     private float currentTextSize = 14f;
     private String draftKey;
     private String mcpJobId = "";
+    private String pendingInboundJobId = "";
+    private String currentDocumentNameOverride = "";
+    private boolean inboundNeedsContextSync = false;
     private volatile boolean mcpBusy;
     private boolean mcpForeground;
 
@@ -259,6 +267,18 @@ public class EditorActivity extends Activity {
                 int savedPage = savedInstanceState.getInt(STATE_PAGE, 0);
                 openPdf(Uri.parse(savedUri), null, savedPage);
             }
+        } else {
+            Uri inboundUri = getIntent() == null ? null : getIntent().getData();
+            String inboundJob = getIntent() == null
+                    ? "" : getIntent().getStringExtra(EXTRA_MCP_JOB_ID);
+            String inboundName = getIntent() == null
+                    ? "" : getIntent().getStringExtra(EXTRA_MCP_DOCUMENT_NAME);
+
+            if (inboundUri != null && inboundJob != null && !inboundJob.trim().isEmpty()) {
+                pendingInboundJobId = inboundJob.trim();
+                currentDocumentNameOverride = inboundName == null ? "" : inboundName.trim();
+                openPdf(inboundUri, null, -1);
+            }
         }
     }
 
@@ -307,9 +327,16 @@ public class EditorActivity extends Activity {
             }
             sourceUri = uri;
             draftKey = buildDraftKey(uri);
-            // Reopening the same PDF must keep its MCP job. This lets a ready
-            // ChatGPT command survive an in-place application update.
-            loadMcpJobForDraft();
+
+            if (pendingInboundJobId != null && !pendingInboundJobId.isEmpty()) {
+                mcpJobId = pendingInboundJobId;
+                pendingInboundJobId = "";
+                inboundNeedsContextSync = true;
+                persistMcpJob();
+            } else {
+                // Reopening the same PDF keeps its MCP link so commands survive updates.
+                loadMcpJobForDraft();
+            }
             pageIndex = 0;
             overlays.clear();
             synchronized (detectedFieldsByPage) {
@@ -320,7 +347,11 @@ public class EditorActivity extends Activity {
             if (requestedPage >= 0) pageIndex = requestedPage;
             pageIndex = Math.max(0, Math.min(pageIndex, Math.max(0, count - 1)));
             renderCurrentPage();
-            autoQueueOrFetchChatGpt();
+            if (inboundNeedsContextSync) {
+                syncInboundDocumentContext();
+            } else {
+                autoQueueOrFetchChatGpt();
+            }
         } catch (Exception e) {
             AppLog.write(this, "openPdf", e);
             closePdf();
@@ -537,6 +568,57 @@ public class EditorActivity extends Activity {
         }
     }
 
+    private void syncInboundDocumentContext() {
+        if (sourceUri == null || mcpJobId == null || mcpJobId.isEmpty() || mcpBusy) return;
+
+        SharedPreferences settings = getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE);
+        String endpoint = settings.getString("mcpUrl", "").trim();
+        String token = settings.getString("mcpToken", "").trim();
+        if (endpoint.isEmpty()) {
+            inboundNeedsContextSync = false;
+            tvPosition.setText("PDF reçu de ChatGPT. Configurez le MCP dans Réglages.");
+            return;
+        }
+
+        mcpBusy = true;
+        tvPosition.setText("Analyse du PDF reçu de ChatGPT…");
+        final Uri uriSnapshot = sourceUri;
+        final int pageCount = getPageCountSafe();
+        final String jobId = mcpJobId;
+
+        worker.execute(() -> {
+            try {
+                JSONObject document = buildMcpDocumentContext(uriSnapshot, pageCount);
+                JSONObject profile = buildMcpProfile();
+                JSONArray fieldHints = buildMcpFieldHints(pageCount, document);
+
+                McpClient.updateJobContext(endpoint, token, jobId,
+                        document, profile, fieldHints,
+                        (success, message) -> runOnUiThread(() -> {
+                            mcpBusy = false;
+                            inboundNeedsContextSync = false;
+                            if (destroyed || isFinishing() || !jobId.equals(mcpJobId)) return;
+
+                            if (success) {
+                                tvPosition.setText("PDF reçu et synchronisé avec ChatGPT.");
+                                fetchChatGptResult(endpoint, token, false);
+                            } else {
+                                tvPosition.setText(message);
+                            }
+                        }));
+            } catch (Exception e) {
+                AppLog.write(EditorActivity.this, "syncInboundContext", e);
+                runOnUiThread(() -> {
+                    mcpBusy = false;
+                    inboundNeedsContextSync = false;
+                    if (!destroyed && !isFinishing()) {
+                        tvPosition.setText("Analyse du PDF reçu impossible : " + safeMessage(e));
+                    }
+                });
+            }
+        });
+    }
+
     private void sendDocumentToChatGpt(String endpoint, String token) {
         mcpBusy = true;
         tvPosition.setText("Préparation automatique du document pour ChatGPT…");
@@ -665,12 +747,103 @@ public class EditorActivity extends Activity {
                     if (destroyed || isFinishing() || !jobId.equals(mcpJobId)) return;
 
                     if (success) {
-                        tvPosition.setText("Document synchronisé avec ChatGPT • "
-                                + current.length() + " élément(s) appliqué(s).");
+                        tvPosition.setText("Document rempli • préparation du PDF final pour ChatGPT…");
+                        uploadFilledPdfToMcp(endpoint, token, jobId);
                     } else {
                         tvPosition.setText("Document rempli localement • confirmation MCP à réessayer.");
                     }
                 }));
+    }
+
+    private void uploadFilledPdfToMcp(String endpoint, String token, String jobId) {
+        if (sourceUri == null || jobId == null || jobId.isEmpty()) return;
+
+        mcpBusy = true;
+        final List<TextOverlay> overlaySnapshot = new ArrayList<>(overlays);
+
+        worker.execute(() -> {
+            File target = new File(getCacheDir(), "mcp-filled-" + jobId + ".pdf");
+            try {
+                writeFilledPdfFile(target, overlaySnapshot);
+                McpClient.uploadFilledPdf(endpoint, token, jobId, target,
+                        (success, message) -> runOnUiThread(() -> {
+                            mcpBusy = false;
+                            target.delete();
+                            if (destroyed || isFinishing() || !jobId.equals(mcpJobId)) return;
+
+                            if (success) {
+                                tvPosition.setText("PDF final disponible dans ChatGPT.");
+                            } else {
+                                tvPosition.setText("Document rempli • " + message);
+                            }
+                        }));
+            } catch (Exception e) {
+                AppLog.write(EditorActivity.this, "uploadFilledPdf", e);
+                target.delete();
+                runOnUiThread(() -> {
+                    mcpBusy = false;
+                    if (!destroyed && !isFinishing()) {
+                        tvPosition.setText("Document rempli • PDF final non envoyé : " + safeMessage(e));
+                    }
+                });
+            }
+        });
+    }
+
+    private void writeFilledPdfFile(File target, List<TextOverlay> overlaySnapshot) throws Exception {
+        PdfDocument out = new PdfDocument();
+        Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        textPaint.setColor(Color.BLACK);
+        Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+
+        try {
+            int count = getPageCountSafe();
+            if (count <= 0) throw new IOException("PDF source fermé");
+
+            for (int i = 0; i < count; i++) {
+                RenderedPage rendered = renderPage(i, true);
+                Bitmap bitmap = rendered.bitmap;
+                PdfDocument.Page dest = null;
+                try {
+                    PdfDocument.PageInfo info = new PdfDocument.PageInfo.Builder(
+                            rendered.pageWidth, rendered.pageHeight, i + 1).create();
+                    dest = out.startPage(info);
+                    Canvas canvas = dest.getCanvas();
+                    canvas.drawBitmap(bitmap, null,
+                            new RectF(0f, 0f, rendered.pageWidth, rendered.pageHeight), bitmapPaint);
+
+                    for (TextOverlay overlay : overlaySnapshot) {
+                        if (overlay.pageIndex != i) continue;
+                        textPaint.setTextSize(overlay.textSize);
+                        canvas.drawText(overlay.text,
+                                overlay.x * rendered.pageWidth,
+                                overlay.y * rendered.pageHeight,
+                                textPaint);
+                    }
+
+                    out.finishPage(dest);
+                    dest = null;
+                } finally {
+                    recycle(bitmap);
+                    if (dest != null) {
+                        try {
+                            out.finishPage(dest);
+                        } catch (Exception ignored) {
+                        }
+                    }
+                }
+            }
+
+            try (FileOutputStream stream = new FileOutputStream(target, false)) {
+                out.writeTo(stream);
+                stream.flush();
+            }
+        } finally {
+            try {
+                out.close();
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     private int applyMcpPlan(JSONObject fillPlan) throws Exception {
@@ -752,8 +925,13 @@ public class EditorActivity extends Activity {
 
     private JSONObject buildMcpDocumentContext(Uri uri, int expectedPageCount) throws Exception {
         JSONObject root = new JSONObject();
-        root.put("name", uri == null || uri.getLastPathSegment() == null
-                ? "document.pdf" : uri.getLastPathSegment());
+        String resolvedName = currentDocumentNameOverride == null
+                ? "" : currentDocumentNameOverride.trim();
+        if (resolvedName.isEmpty()) {
+            resolvedName = uri == null || uri.getLastPathSegment() == null
+                    ? "document.pdf" : uri.getLastPathSegment();
+        }
+        root.put("name", resolvedName);
         root.put("page_count", expectedPageCount);
         root.put("app_version", BuildConfig.VERSION_NAME);
         root.put("app_version_code", BuildConfig.VERSION_CODE);
