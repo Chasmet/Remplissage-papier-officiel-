@@ -39,10 +39,12 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -893,12 +895,95 @@ public class EditorActivity extends Activity {
                     if (destroyed || isFinishing() || !jobId.equals(mcpJobId)) return;
 
                     if (success) {
-                        tvPosition.setText("Document rempli • préparation du PDF final pour ChatGPT…");
-                        uploadFilledPdfToMcp(endpoint, token, jobId);
+                        tvPosition.setText("Document rempli • création de la prévisualisation pour ChatGPT…");
+                        uploadPreviewThenFilledPdf(endpoint, token, jobId);
                     } else {
                         tvPosition.setText("Document rempli localement • confirmation MCP à réessayer.");
                     }
                 }));
+    }
+
+    private void uploadPreviewThenFilledPdf(String endpoint, String token, String jobId) {
+        if (sourceUri == null || jobId == null || jobId.isEmpty()) return;
+
+        mcpBusy = true;
+        final List<TextOverlay> overlaySnapshot = new ArrayList<>(overlays);
+        final int fallbackPage = pageIndex;
+
+        worker.execute(() -> {
+            int previews = 0;
+            try {
+                previews = uploadMcpPreviewImages(
+                        endpoint, token, jobId, overlaySnapshot, fallbackPage);
+            } catch (Exception e) {
+                AppLog.write(EditorActivity.this, "uploadMcpPreviewImages", e);
+            }
+
+            final int previewCount = previews;
+            runOnUiThread(() -> {
+                mcpBusy = false;
+                if (destroyed || isFinishing() || !jobId.equals(mcpJobId)) return;
+
+                if (previewCount > 0) {
+                    tvPosition.setText("Prévisualisation envoyée à ChatGPT • contrôle visuel possible.");
+                } else {
+                    tvPosition.setText("Document rempli • prévisualisation non disponible, envoi du PDF final…");
+                }
+                uploadFilledPdfToMcp(endpoint, token, jobId);
+            });
+        });
+    }
+
+    private int uploadMcpPreviewImages(String endpoint, String token, String jobId,
+                                       List<TextOverlay> overlaySnapshot,
+                                       int fallbackPage) {
+        Set<Integer> pages = new HashSet<>();
+        for (TextOverlay overlay : overlaySnapshot) {
+            if (overlay != null && overlay.pageIndex >= 0
+                    && overlay.pageIndex < getPageCountSafe()) {
+                pages.add(overlay.pageIndex);
+            }
+        }
+        if (pages.isEmpty() && fallbackPage >= 0 && fallbackPage < getPageCountSafe()) {
+            pages.add(fallbackPage);
+        }
+
+        int uploaded = 0;
+        for (Integer page : pages) {
+            Bitmap renderedBitmap = null;
+            Bitmap uploadBitmap = null;
+            try {
+                RenderedPage rendered = renderPage(page, false);
+                renderedBitmap = rendered.bitmap;
+
+                Canvas canvas = new Canvas(renderedBitmap);
+                Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                textPaint.setColor(Color.BLACK);
+                float renderScale = renderedBitmap.getWidth()
+                        / (float) Math.max(1, rendered.pageWidth);
+
+                for (TextOverlay overlay : overlaySnapshot) {
+                    if (overlay == null || overlay.pageIndex != page) continue;
+                    drawOverlayExact(canvas, textPaint, overlay,
+                            renderedBitmap.getWidth(), renderedBitmap.getHeight(),
+                            renderScale);
+                }
+
+                uploadBitmap = scaleForMcpVision(renderedBitmap, 1600);
+                byte[] jpeg = encodeMcpJpeg(uploadBitmap);
+                McpClient.uploadPreviewImageBlocking(
+                        endpoint, token, jobId, page, jpeg);
+                uploaded++;
+            } catch (Exception e) {
+                AppLog.write(this, "uploadMcpPreview page=" + page, e);
+            } finally {
+                if (uploadBitmap != null && uploadBitmap != renderedBitmap) {
+                    recycle(uploadBitmap);
+                }
+                recycle(renderedBitmap);
+            }
+        }
+        return uploaded;
     }
 
     private void uploadFilledPdfToMcp(String endpoint, String token, String jobId) {
