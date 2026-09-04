@@ -149,6 +149,29 @@
                 android:textColor="#FFFFFF"
                 android:textStyle="bold" />
 
+            <Button
+                android:id="@+id/btnMcpDiagnostics"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bg_button_dark"
+                android:backgroundTint="@null"
+                android:text="JOURNAL CHATGPT / DIAGNOSTIC"
+                android:textColor="#FFE1A8"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvBridgeStatusSettings"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_input"
+                android:padding="10dp"
+                android:text="ChatGPT : état inconnu"
+                android:textColor="#FFF1D7"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
             <TextView
                 android:id="@+id/tvMcpStatus"
                 android:layout_width="match_parent"
