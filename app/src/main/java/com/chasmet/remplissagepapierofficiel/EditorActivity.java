@@ -557,7 +557,7 @@ public class EditorActivity extends Activity {
     private void fetchChatGptResult(String endpoint, String token, boolean userRequested) {
         if (mcpJobId == null || mcpJobId.isEmpty() || mcpBusy) return;
         mcpBusy = true;
-        if (userRequested) tvPosition.setText("Recherche du remplissage préparé par ChatGPT…");
+        if (userRequested) tvPosition.setText("Synchronisation avec ChatGPT…");
 
         final String requestedJob = mcpJobId;
         McpClient.getJob(endpoint, token, requestedJob, new McpClient.JobStatusCallback() {
@@ -569,25 +569,16 @@ public class EditorActivity extends Activity {
 
                     if ("ready".equalsIgnoreCase(status) && fillPlan != null) {
                         try {
-                            List<TextOverlay> aiOverlays = AiFillPlan.parse(
-                                    fillPlan.toString(), getPageCountSafe());
-                            if (aiOverlays.isEmpty()) {
-                                finishMcpError("ChatGPT a renvoyé un plan vide.");
-                                return;
-                            }
-
-                            overlays.addAll(aiOverlays);
+                            int changed = applyMcpPlan(fillPlan);
                             saveDraft(true);
                             clearPersistedMcpJob();
-                            tvPosition.setText(aiOverlays.size()
-                                    + " éléments ajoutés par ChatGPT • vérifiez puis exportez le PDF.");
+                            tvPosition.setText("Commande ChatGPT appliquée • "
+                                    + changed + " élément(s) de document modifié(s).");
                             renderCurrentPage();
-                            Toast.makeText(EditorActivity.this,
-                                    "Remplissage ChatGPT appliqué",
-                                    Toast.LENGTH_LONG).show();
+                            autoQueueOrFetchChatGpt();
                         } catch (Exception e) {
                             AppLog.write(EditorActivity.this, "applyMcpPlan", e);
-                            finishMcpError("Plan ChatGPT invalide : " + safeMessage(e));
+                            finishMcpError("Commande ChatGPT invalide : " + safeMessage(e));
                         }
                         return;
                     }
@@ -596,12 +587,13 @@ public class EditorActivity extends Activity {
                             || "cancelled".equalsIgnoreCase(status)) {
                         clearPersistedMcpJob();
                         tvPosition.setText(errorMessage == null || errorMessage.trim().isEmpty()
-                                ? "Le remplissage ChatGPT a échoué. Vous pouvez réessayer."
+                                ? "La commande ChatGPT n’a pas été appliquée."
                                 : errorMessage);
+                        autoQueueOrFetchChatGpt();
                         return;
                     }
 
-                    tvPosition.setText("Document disponible dans ChatGPT. Demandez-lui de le remplir puis revenez dans l’application.");
+                    tvPosition.setText("Document disponible dans ChatGPT.");
                 });
             }
 
@@ -612,11 +604,73 @@ public class EditorActivity extends Activity {
         });
     }
 
+    private int applyMcpPlan(JSONObject fillPlan) throws Exception {
+        String mode = fillPlan.optString("mode", "append").trim().toLowerCase(Locale.ROOT);
+        int targetPage = fillPlan.optInt("target_page", -1);
+        List<TextOverlay> incoming = AiFillPlan.parse(fillPlan.toString(), getPageCountSafe());
+
+        int changed = 0;
+        if ("replace_document".equals(mode) || "replace".equals(mode)) {
+            changed += overlays.size();
+            overlays.clear();
+        } else if ("clear_document".equals(mode)) {
+            changed += overlays.size();
+            overlays.clear();
+            incoming.clear();
+        } else if ("replace_page".equals(mode) || "clear_page".equals(mode)) {
+            if (targetPage < 0 || targetPage >= getPageCountSafe()) {
+                throw new IllegalArgumentException("Page cible invalide");
+            }
+            for (int i = overlays.size() - 1; i >= 0; i--) {
+                if (overlays.get(i).pageIndex == targetPage) {
+                    overlays.remove(i);
+                    changed++;
+                }
+            }
+            if ("clear_page".equals(mode)) incoming.clear();
+        } else if (!"append".equals(mode) && !"update_profile".equals(mode)) {
+            throw new IllegalArgumentException("Mode MCP inconnu : " + mode);
+        }
+
+        if (!incoming.isEmpty()) {
+            overlays.addAll(incoming);
+            changed += incoming.size();
+        }
+
+        JSONObject profileUpdates = fillPlan.optJSONObject("profile_updates");
+        if (profileUpdates != null) {
+            changed += applyProfileUpdates(profileUpdates);
+        }
+        return changed;
+    }
+
+    private int applyProfileUpdates(JSONObject updates) {
+        SharedPreferences.Editor editor = getSharedPreferences(ProfileActivity.PREFS, MODE_PRIVATE).edit();
+        String[] keys = new String[]{
+                "firstName", "lastName", "birthDate", "birthPlace",
+                "address", "postalCode", "city", "phone", "email", "otherId"
+        };
+        int changed = 0;
+        for (String key : keys) {
+            if (!updates.has(key)) continue;
+            String value = updates.optString(key, "");
+            editor.putString(key, value);
+            changed++;
+        }
+        if (changed > 0) editor.apply();
+        return changed;
+    }
+
     private JSONObject buildMcpDocumentContext(Uri uri, int expectedPageCount) throws Exception {
         JSONObject root = new JSONObject();
         root.put("name", uri == null || uri.getLastPathSegment() == null
                 ? "document.pdf" : uri.getLastPathSegment());
         root.put("page_count", expectedPageCount);
+        root.put("app_version", BuildConfig.VERSION_NAME);
+        root.put("app_version_code", BuildConfig.VERSION_CODE);
+        root.put("current_page_index", pageIndex);
+        root.put("current_text_size", currentTextSize);
+        root.put("current_overlays", buildMcpCurrentOverlays());
         root.put("capabilities", AiFillPlan.capabilities());
 
         JSONArray pages = new JSONArray();
@@ -650,12 +704,25 @@ public class EditorActivity extends Activity {
         }
         root.put("pages", pages);
         root.put("instruction",
-                "Remplir le formulaire avec le profil fourni et respecter la structure réelle du formulaire. "
-                        + "Pour les cases à cocher, choisir uniquement les options justifiées par les informations connues, "
-                        + "ne jamais cocher Oui et Non ensemble sauf si le formulaire l'autorise, et placer un X au centre de la case choisie. "
-                        + "Les champs détectés sont des indices géométriques enrichis de texte voisin. "
-                        + "Les placements finaux doivent utiliser page_index 0-based et x/y normalisés entre 0 et 1.");
+                "ChatGPT a le contrôle fonctionnel du contenu du document : lecture complète, ajout, remplacement, "
+                        + "effacement de page ou du document, modification du profil et gestion des cases. "
+                        + "Les champs détectés sont des repères mais n'imposent aucune zone : l'écriture peut être placée librement. "
+                        + "Les placements utilisent page_index 0-based et x/y normalisés entre 0 et 1.");
         return root;
+    }
+
+    private JSONArray buildMcpCurrentOverlays() throws Exception {
+        JSONArray items = new JSONArray();
+        for (TextOverlay overlay : overlays) {
+            JSONObject item = new JSONObject();
+            item.put("page_index", overlay.pageIndex);
+            item.put("x", overlay.x);
+            item.put("y", overlay.y);
+            item.put("text", overlay.text);
+            item.put("size", overlay.textSize);
+            items.put(item);
+        }
+        return items;
     }
 
     private JSONObject buildMcpProfile() throws Exception {
