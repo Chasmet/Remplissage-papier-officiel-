@@ -33,8 +33,10 @@ public final class AiFillPlan {
             if (text.isEmpty()) continue;
 
             int pageIndex;
-            if (item.has("pageIndex")) {
-                pageIndex = item.optInt("pageIndex", 0);
+            if (item.has("page_index")) {
+                pageIndex = Math.max(0, item.optInt("page_index", 0));
+            } else if (item.has("pageIndex")) {
+                pageIndex = Math.max(0, item.optInt("pageIndex", 0));
             } else {
                 int humanPage = item.optInt("page", 1);
                 pageIndex = Math.max(0, humanPage - 1);
