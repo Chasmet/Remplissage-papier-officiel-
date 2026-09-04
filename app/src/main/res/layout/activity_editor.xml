@@ -28,6 +28,53 @@
 
     <LinearLayout
         android:layout_width="match_parent"
+        android:layout_height="46dp"
+        android:layout_marginTop="7dp"
+        android:background="@drawable/bg_card_accent"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="4dp">
+
+        <TextView
+            android:id="@+id/tvChatGptStatus"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="center_vertical"
+            android:maxLines="2"
+            android:paddingStart="8dp"
+            android:paddingEnd="6dp"
+            android:text="ChatGPT : aucun document synchronisé"
+            android:textColor="#FFF1D7"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnMcpSync"
+            android:layout_width="82dp"
+            android:layout_height="38dp"
+            android:background="@drawable/bg_button_orange"
+            android:backgroundTint="@null"
+            android:text="SYNCHRO"
+            android:textColor="#FFFFFF"
+            android:textSize="9sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnMcpLogs"
+            android:layout_width="62dp"
+            android:layout_height="38dp"
+            android:layout_marginStart="4dp"
+            android:background="@drawable/bg_button_dark"
+            android:backgroundTint="@null"
+            android:text="LOGS"
+            android:textColor="#FFE1A8"
+            android:textSize="9sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
         android:layout_height="44dp"
         android:layout_marginTop="7dp"
         android:background="@drawable/bg_card"
