@@ -67,7 +67,6 @@ public class EditorActivity extends Activity {
     private Button btnDetectFields;
     private Button btnExportPdf;
     private Button btnExportPng;
-    private Button btnChatGptFill;
 
     private Uri sourceUri;
     private ParcelFileDescriptor sourceDescriptor;
@@ -175,7 +174,6 @@ public class EditorActivity extends Activity {
         btnDetectFields = findViewById(R.id.btnDetectFields);
         btnExportPdf = findViewById(R.id.btnExportPdf);
         btnExportPng = findViewById(R.id.btnExportPng);
-        btnChatGptFill = findViewById(R.id.btnChatGptFill);
 
         pdfView.setOnPositionSelectedListener((x, y) -> {
             selectedX = x;
@@ -217,7 +215,6 @@ public class EditorActivity extends Activity {
         findViewById(R.id.btnClearPage).setOnClickListener(v -> clearCurrentPage());
         btnExportPdf.setOnClickListener(v -> requestPdfExport());
         btnExportPng.setOnClickListener(v -> requestPngExport());
-        btnChatGptFill.setOnClickListener(v -> sendOrFetchChatGpt());
 
         if (savedInstanceState != null) {
             currentTextSize = savedInstanceState.getFloat(STATE_TEXT_SIZE, 14f);
@@ -290,6 +287,7 @@ public class EditorActivity extends Activity {
             if (requestedPage >= 0) pageIndex = requestedPage;
             pageIndex = Math.max(0, Math.min(pageIndex, Math.max(0, count - 1)));
             renderCurrentPage();
+            autoQueueOrFetchChatGpt();
         } catch (Exception e) {
             AppLog.write(this, "openPdf", e);
             closePdf();
@@ -487,35 +485,28 @@ public class EditorActivity extends Activity {
         return result;
     }
 
-    private void sendOrFetchChatGpt() {
-        if (getPageCountSafe() <= 0 || sourceUri == null) {
-            Toast.makeText(this, "Choisissez d’abord un PDF", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        if (mcpBusy) return;
+    private void autoQueueOrFetchChatGpt() {
+        if (getPageCountSafe() <= 0 || sourceUri == null || mcpBusy) return;
 
         SharedPreferences settings = getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE);
         String endpoint = settings.getString("mcpUrl", "").trim();
         String token = settings.getString("mcpToken", "").trim();
+
         if (endpoint.isEmpty()) {
-            Toast.makeText(this,
-                    "Configurez d’abord l’URL MCP dans Réglages.",
-                    Toast.LENGTH_LONG).show();
+            tvPosition.setText("Document chargé. Configurez le MCP dans Réglages pour le rendre disponible dans ChatGPT.");
             return;
         }
 
         if (mcpJobId == null || mcpJobId.isEmpty()) {
             sendDocumentToChatGpt(endpoint, token);
         } else {
-            fetchChatGptResult(endpoint, token, true);
+            fetchChatGptResult(endpoint, token, false);
         }
     }
 
     private void sendDocumentToChatGpt(String endpoint, String token) {
         mcpBusy = true;
-        btnChatGptFill.setEnabled(false);
-        btnChatGptFill.setText("ANALYSE DU PDF…");
-        tvPosition.setText("Préparation du document pour ChatGPT…");
+        tvPosition.setText("Préparation automatique du document pour ChatGPT…");
 
         final Uri uriSnapshot = sourceUri;
         final int pageCount = getPageCountSafe();
@@ -537,9 +528,7 @@ public class EditorActivity extends Activity {
                                     if (destroyed || isFinishing()) return;
                                     mcpJobId = jobId;
                                     persistMcpJob();
-                                    btnChatGptFill.setEnabled(true);
-                                    btnChatGptFill.setText("RÉCUPÉRER CHATGPT");
-                                    tvPosition.setText("Document envoyé. Ouvrez ChatGPT et demandez de remplir le document.");
+                                    tvPosition.setText("Document disponible dans ChatGPT. Demandez simplement : « remplis le document ».");
                                     Toast.makeText(EditorActivity.this,
                                             "Document envoyé à ChatGPT",
                                             Toast.LENGTH_LONG).show();
@@ -562,8 +551,6 @@ public class EditorActivity extends Activity {
     private void fetchChatGptResult(String endpoint, String token, boolean userRequested) {
         if (mcpJobId == null || mcpJobId.isEmpty() || mcpBusy) return;
         mcpBusy = true;
-        btnChatGptFill.setEnabled(false);
-        btnChatGptFill.setText("VÉRIFICATION…");
         if (userRequested) tvPosition.setText("Recherche du remplissage préparé par ChatGPT…");
 
         final String requestedJob = mcpJobId;
@@ -586,8 +573,6 @@ public class EditorActivity extends Activity {
                             overlays.addAll(aiOverlays);
                             saveDraft(true);
                             clearPersistedMcpJob();
-                            btnChatGptFill.setEnabled(true);
-                            btnChatGptFill.setText("REMPLIR AVEC CHATGPT");
                             tvPosition.setText(aiOverlays.size()
                                     + " éléments ajoutés par ChatGPT • vérifiez puis exportez le PDF.");
                             renderCurrentPage();
@@ -604,17 +589,13 @@ public class EditorActivity extends Activity {
                     if ("failed".equalsIgnoreCase(status)
                             || "cancelled".equalsIgnoreCase(status)) {
                         clearPersistedMcpJob();
-                        btnChatGptFill.setEnabled(true);
-                        btnChatGptFill.setText("REMPLIR AVEC CHATGPT");
                         tvPosition.setText(errorMessage == null || errorMessage.trim().isEmpty()
                                 ? "Le remplissage ChatGPT a échoué. Vous pouvez réessayer."
                                 : errorMessage);
                         return;
                     }
 
-                    btnChatGptFill.setEnabled(true);
-                    btnChatGptFill.setText("RÉCUPÉRER CHATGPT");
-                    tvPosition.setText("ChatGPT n’a pas encore terminé. Demandez-lui de remplir le document puis revenez ici.");
+                    tvPosition.setText("Document disponible dans ChatGPT. Demandez-lui de le remplir puis revenez dans l’application.");
                 });
             }
 
@@ -826,11 +807,7 @@ public class EditorActivity extends Activity {
         mcpJobId = getSharedPreferences(DRAFT_PREFS, MODE_PRIVATE)
                 .getString(draftKey + MCP_JOB_SUFFIX, "");
         if (mcpJobId == null) mcpJobId = "";
-        if (btnChatGptFill != null) {
-            btnChatGptFill.setText(mcpJobId.isEmpty()
-                    ? "REMPLIR AVEC CHATGPT"
-                    : "RÉCUPÉRER CHATGPT");
-        }
+
     }
 
     private void persistMcpJob() {
@@ -853,12 +830,6 @@ public class EditorActivity extends Activity {
 
     private void finishMcpError(String message) {
         mcpBusy = false;
-        if (btnChatGptFill != null) {
-            btnChatGptFill.setEnabled(true);
-            btnChatGptFill.setText(mcpJobId == null || mcpJobId.isEmpty()
-                    ? "REMPLIR AVEC CHATGPT"
-                    : "RÉCUPÉRER CHATGPT");
-        }
         tvPosition.setText(message);
         Toast.makeText(this, message, Toast.LENGTH_LONG).show();
     }
@@ -1253,10 +1224,7 @@ public class EditorActivity extends Activity {
         draftKey = null;
         mcpJobId = "";
         mcpBusy = false;
-        if (btnChatGptFill != null) {
-            btnChatGptFill.setEnabled(true);
-            btnChatGptFill.setText("REMPLIR AVEC CHATGPT");
-        }
+
         synchronized (detectedFieldsByPage) {
             detectedFieldsByPage.clear();
         }
