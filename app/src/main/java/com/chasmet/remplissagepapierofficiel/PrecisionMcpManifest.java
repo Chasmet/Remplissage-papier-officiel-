@@ -1,0 +1,4 @@
+package com.chasmet.remplissagepapierofficiel;
+import org.json.JSONArray;
+import org.json.JSONObject;
+public final class PrecisionMcpManifest { private PrecisionMcpManifest(){} public static JSONObject json() throws Exception {JSONArray t=new JSONArray();t.put(PrecisionApiNames.GET_ACTIVE_DOCUMENT).put(PrecisionApiNames.GET_PAGE_IMAGE).put(PrecisionApiNames.GET_DOCUMENT_GEOMETRY).put(PrecisionApiNames.GET_DETECTED_FIELDS).put(PrecisionApiNames.MEASURE_TEXT).put(PrecisionApiNames.ADD_OVERLAY).put(PrecisionApiNames.UPDATE_OVERLAY).put(PrecisionApiNames.DELETE_OVERLAY).put(PrecisionApiNames.RENDER_PREVIEW).put(PrecisionApiNames.GET_PREVIEW_CROP).put(PrecisionApiNames.VALIDATE_LAYOUT).put(PrecisionApiNames.EXPORT_FINAL_PDF);return new JSONObject().put("tools",t).put("authentication_required",false).put("legacy_tools_preserved",true);} }
