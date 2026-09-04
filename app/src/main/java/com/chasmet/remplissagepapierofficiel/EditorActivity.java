@@ -624,7 +624,7 @@ public class EditorActivity extends Activity {
         if (mcpJobId == null || mcpJobId.isEmpty()) {
             sendDocumentToChatGpt(endpoint, token);
         } else {
-            fetchChatGptResult(endpoint, token, false);
+            ensurePersistentMcpBridge();
         }
     }
 
