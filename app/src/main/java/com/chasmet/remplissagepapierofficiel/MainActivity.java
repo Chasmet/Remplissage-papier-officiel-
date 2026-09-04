@@ -3,12 +3,25 @@ package com.chasmet.remplissagepapierofficiel;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.net.Uri;
 import android.os.Bundle;
 import android.widget.Button;
 import android.widget.Toast;
 
+import androidx.core.content.FileProvider;
+
+import org.json.JSONObject;
+
+import java.io.File;
+
 public class MainActivity extends Activity {
+    private static final String SETTINGS_PREFS = "settings";
+    private static final String UI_PREFS = "mcp_ui";
+    private static final String LAST_OPENED_CHAT_JOB = "last_opened_chat_job";
+
     private boolean updateDialogShown = false;
+    private boolean inboxCheckRunning = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -28,6 +41,94 @@ public class MainActivity extends Activity {
         btnSettings.setOnClickListener(v -> startActivity(new Intent(this, SettingsActivity.class)));
 
         checkForUpdateOnLaunch();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        checkChatGptInbox();
+    }
+
+    private void checkChatGptInbox() {
+        if (inboxCheckRunning) return;
+
+        SharedPreferences settings = getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE);
+        String endpoint = settings.getString("mcpUrl", "").trim();
+        String token = settings.getString("mcpToken", "").trim();
+        if (endpoint.isEmpty()) return;
+
+        inboxCheckRunning = true;
+        McpClient.getInbox(endpoint, token, new McpClient.InboxCallback() {
+            @Override
+            public void onInbox(JSONObject document) {
+                runOnUiThread(() -> {
+                    inboxCheckRunning = false;
+                    if (isFinishing() || isDestroyed()) return;
+
+                    String jobId = document.optString("job_id", "").trim();
+                    String name = document.optString("name", "document.pdf");
+                    String downloadUrl = document.optString("download_url", "").trim();
+                    if (jobId.isEmpty() || downloadUrl.isEmpty()) return;
+
+                    String lastOpened = getSharedPreferences(UI_PREFS, MODE_PRIVATE)
+                            .getString(LAST_OPENED_CHAT_JOB, "");
+                    if (jobId.equals(lastOpened)) return;
+
+                    new AlertDialog.Builder(MainActivity.this)
+                            .setTitle("Document reçu de ChatGPT")
+                            .setMessage(name + "\n\nLe PDF est prêt à être ouvert dans Remplissage Papier.")
+                            .setPositiveButton("OUVRIR", (dialog, which) ->
+                                    downloadChatGptDocument(jobId, name, downloadUrl))
+                            .setNegativeButton("PLUS TARD", null)
+                            .show();
+                });
+            }
+
+            @Override
+            public void onEmpty() {
+                runOnUiThread(() -> inboxCheckRunning = false);
+            }
+
+            @Override
+            public void onError(String message) {
+                runOnUiThread(() -> inboxCheckRunning = false);
+            }
+        });
+    }
+
+    private void downloadChatGptDocument(String jobId, String name, String downloadUrl) {
+        Toast.makeText(this, "Téléchargement du PDF…", Toast.LENGTH_SHORT).show();
+        File target = new File(getCacheDir(), "chatgpt-" + jobId + ".pdf");
+
+        McpClient.downloadPdf(downloadUrl, target, (success, message) -> runOnUiThread(() -> {
+            if (!success) {
+                Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                return;
+            }
+
+            try {
+                Uri uri = FileProvider.getUriForFile(
+                        MainActivity.this,
+                        BuildConfig.APPLICATION_ID + ".fileprovider",
+                        target);
+
+                getSharedPreferences(UI_PREFS, MODE_PRIVATE)
+                        .edit()
+                        .putString(LAST_OPENED_CHAT_JOB, jobId)
+                        .apply();
+
+                Intent intent = new Intent(MainActivity.this, EditorActivity.class);
+                intent.setData(uri);
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                intent.putExtra(EditorActivity.EXTRA_MCP_JOB_ID, jobId);
+                intent.putExtra(EditorActivity.EXTRA_MCP_DOCUMENT_NAME, name);
+                startActivity(intent);
+            } catch (Exception e) {
+                Toast.makeText(MainActivity.this,
+                        "Impossible d’ouvrir le PDF : " + e.getMessage(),
+                        Toast.LENGTH_LONG).show();
+            }
+        }));
     }
 
     private void checkForUpdateOnLaunch() {
