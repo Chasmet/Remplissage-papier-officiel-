@@ -1,0 +1,2 @@
+package com.chasmet.remplissagepapierofficiel;
+public final class PrecisionStatusText { private PrecisionStatusText(){} public static String waiting(){return "ChatGPT analyse le document";} public static String correcting(){return "ChatGPT corrige le placement";} public static String validating(){return "Contrôle visuel du document";} public static String ready(){return "Document validé • prêt à exporter";} }
