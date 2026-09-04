@@ -15,6 +15,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
+import android.os.SystemClock;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
@@ -66,6 +67,7 @@ public class EditorActivity extends Activity {
     private static final String MCP_JOB_VERSION_SUFFIX = "_mcp_job_version";
     private static final String MCP_COMMAND_SUFFIX = "_mcp_last_command";
     private static final long MCP_POLL_INTERVAL_MS = 2500L;
+    private static final long MCP_BACKGROUND_BRIDGE_MS = 10L * 60L * 1000L;
     private static final int MAX_TEXT_PER_PAGE = 6000;
     private static final int MAX_TEXT_BLOCKS_PER_PAGE = 180;
 
@@ -95,12 +97,15 @@ public class EditorActivity extends Activity {
     private boolean inboundNeedsContextSync = false;
     private volatile boolean mcpBusy;
     private boolean mcpForeground;
+    private long mcpBackgroundUntilElapsed;
 
     private final Handler mcpHandler = new Handler(Looper.getMainLooper());
     private final Runnable mcpPollRunnable = new Runnable() {
         @Override
         public void run() {
-            if (destroyed || !mcpForeground) return;
+            boolean bridgeActive = mcpForeground
+                    || SystemClock.elapsedRealtime() < mcpBackgroundUntilElapsed;
+            if (destroyed || !bridgeActive) return;
 
             if (sourceUri != null && getPageCountSafe() > 0 && !mcpBusy) {
                 SharedPreferences settings = getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE);
@@ -115,7 +120,9 @@ public class EditorActivity extends Activity {
                 }
             }
 
-            if (!destroyed && mcpForeground) {
+            boolean keepBridge = mcpForeground
+                    || SystemClock.elapsedRealtime() < mcpBackgroundUntilElapsed;
+            if (!destroyed && keepBridge) {
                 mcpHandler.postDelayed(this, MCP_POLL_INTERVAL_MS);
             }
         }
@@ -1759,6 +1766,7 @@ public class EditorActivity extends Activity {
     protected void onResume() {
         super.onResume();
         mcpForeground = true;
+        mcpBackgroundUntilElapsed = 0L;
         mcpHandler.removeCallbacks(mcpPollRunnable);
         mcpHandler.post(mcpPollRunnable);
     }
@@ -1766,7 +1774,15 @@ public class EditorActivity extends Activity {
     @Override
     protected void onPause() {
         mcpForeground = false;
-        mcpHandler.removeCallbacks(mcpPollRunnable);
+        if (sourceUri != null && mcpJobId != null && !mcpJobId.isEmpty()) {
+            mcpBackgroundUntilElapsed = SystemClock.elapsedRealtime()
+                    + MCP_BACKGROUND_BRIDGE_MS;
+            mcpHandler.removeCallbacks(mcpPollRunnable);
+            mcpHandler.post(mcpPollRunnable);
+        } else {
+            mcpBackgroundUntilElapsed = 0L;
+            mcpHandler.removeCallbacks(mcpPollRunnable);
+        }
         if (draftKey != null) saveDraft(true);
         super.onPause();
     }
