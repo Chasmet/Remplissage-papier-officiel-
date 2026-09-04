@@ -1,0 +1,3 @@
+package com.chasmet.remplissagepapierofficiel;
+import org.json.JSONArray;import org.json.JSONObject;
+public final class PrecisionValidationContract { private PrecisionValidationContract(){} public static JSONObject json() throws Exception {JSONArray p=new JSONArray().put(QualityProblemCodes.TEXT_OUTSIDE_PAGE).put(QualityProblemCodes.TEXT_TOUCHES_LINE).put(QualityProblemCodes.TEXT_TOO_WIDE).put(QualityProblemCodes.OVERLAPS_OVERLAY).put(QualityProblemCodes.CHECKBOX_OUTSIDE_BOX).put(QualityProblemCodes.FONT_TOO_LARGE);return new JSONObject().put("problems",p).put("warnings_never_modify_coordinates",true);} }
