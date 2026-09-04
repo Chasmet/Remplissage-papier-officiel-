@@ -78,6 +78,7 @@ public final class AiFillPlan {
         root.put("supportsReplacePage", true);
         root.put("supportsClearPage", true);
         root.put("supportsProfileReadWrite", true);
+        root.put("supportsEditorStateControl", true);
 
         JSONObject placement = new JSONObject();
         placement.put("page", "1-based page number");
