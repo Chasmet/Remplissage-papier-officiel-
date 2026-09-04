@@ -7,9 +7,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Protocol used by the future MCP/ChatGPT integration.
- * Detected form fields are only visual hints. AI placements are free and may target
- * any normalized x/y coordinate on any page of the PDF.
+ * Protocole de placement contrôlé par ChatGPT.
+ * Les coordonnées sont normalisées 0..1 et sont autoritaires.
  */
 public final class AiFillPlan {
     private AiFillPlan() {
@@ -29,36 +28,66 @@ public final class AiFillPlan {
             JSONObject item = items.optJSONObject(i);
             if (item == null) continue;
 
-            String kind = item.optString("kind", item.optString("type", "text")).trim().toLowerCase(java.util.Locale.ROOT);
+            String kind = item.optString("kind", item.optString("type", "text"))
+                    .trim().toLowerCase(java.util.Locale.ROOT);
             boolean checked = item.optBoolean("checked", false);
-            String text = item.optString("text", "").trim();
+            String text = item.optString("text", "");
             if (text.isEmpty() && ("checkbox".equals(kind) || "check".equals(kind)) && checked) {
-                text = "X";
+                text = item.optString("mark", "X");
+                if (text.trim().isEmpty()) text = "X";
             }
-            if (text.isEmpty()) continue;
+
+            String dataState = TextOverlay.normalizeDataState(
+                    item.optString("data_state", item.optString("state", TextOverlay.STATE_KNOWN)));
+
+            // Une signature ne doit jamais être générée automatiquement.
+            if (TextOverlay.KIND_SIGNATURE.equals(TextOverlay.normalizeKind(kind))
+                    && text.trim().isEmpty()) {
+                dataState = TextOverlay.STATE_REQUIRES_SIGNATURE;
+            }
+
+            if (text.trim().isEmpty()) {
+                // unknown/requires_user/requires_signature sont informatifs et ne dessinent rien.
+                continue;
+            }
 
             int pageIndex;
             if (item.has("page_index")) {
-                pageIndex = Math.max(0, item.optInt("page_index", 0));
+                pageIndex = item.getInt("page_index");
             } else if (item.has("pageIndex")) {
-                pageIndex = Math.max(0, item.optInt("pageIndex", 0));
+                pageIndex = item.getInt("pageIndex");
             } else {
-                int humanPage = item.optInt("page", 1);
-                pageIndex = Math.max(0, humanPage - 1);
+                pageIndex = item.optInt("page", 1) - 1;
             }
-            if (pageCount > 0) pageIndex = Math.min(pageCount - 1, Math.max(0, pageIndex));
+            if (pageIndex < 0 || (pageCount > 0 && pageIndex >= pageCount)) {
+                throw new IllegalArgumentException("page_index hors limites");
+            }
 
-            float x = normalizeCoordinate(item.optDouble("x", 0.10));
-            float y = normalizeCoordinate(item.optDouble("y", 0.10));
+            float x = strictCoordinate(item, "x");
+            float y = strictCoordinate(item, "y");
             float size = (float) item.optDouble("size", item.optDouble("textSize", 8.0));
-            size = Math.max(4f, Math.min(144f, size));
-            String align = TextOverlay.normalizeAlign(item.optString("align", TextOverlay.ALIGN_LEFT));
-            float width = normalizeOptionalSize(item.optDouble("width", 0.0));
-            float height = normalizeOptionalSize(item.optDouble("height", 0.0));
+            if (!Float.isFinite(size) || size < 4f || size > 144f) {
+                throw new IllegalArgumentException("size doit être compris entre 4 et 144");
+            }
+            String align = TextOverlay.normalizeAlign(
+                    item.optString("align", TextOverlay.ALIGN_LEFT));
+            float width = strictOptionalCoordinate(item.optDouble("width", 0.0), "width");
+            float height = strictOptionalCoordinate(item.optDouble("height", 0.0), "height");
+            String overlayId = item.optString("overlay_id",
+                    item.optString("id", item.optString("field_id", "")));
 
             result.add(new TextOverlay(
-                    pageIndex, x, y, text, size,
-                    align, kind, width, height
+                    overlayId,
+                    pageIndex,
+                    x,
+                    y,
+                    text,
+                    size,
+                    align,
+                    kind,
+                    width,
+                    height,
+                    dataState
             ));
         }
         return result;
@@ -72,8 +101,11 @@ public final class AiFillPlan {
 
     public static JSONObject capabilities() throws Exception {
         JSONObject root = new JSONObject();
-        root.put("protocol", "remplissage-papier-officiel.ai-fill.v2");
+        root.put("protocol", "remplissage-papier-officiel.ai-fill.v4");
         root.put("coordinateSystem", "normalized-0-to-1");
+        root.put("coordinatePolicy", "strict-authoritative-no-snap-no-percent-conversion");
+        root.put("textYReference", "exact-baseline");
+        root.put("checkboxXYReference", "exact-center");
         root.put("detectedFieldsAreHintsOnly", true);
         root.put("fieldIdOptional", true);
         root.put("applicationSnappingDisabled", true);
@@ -81,25 +113,32 @@ public final class AiFillPlan {
         root.put("freePlacementAllowed", true);
         root.put("supportsAnyPage", true);
         root.put("supportsCheckboxes", true);
+        root.put("supportsOverlayIds", true);
+        root.put("supportsLocalOverlayUpdate", true);
+        root.put("supportsLocalOverlayDelete", true);
+        root.put("supportsTextMeasurement", true);
+        root.put("supportsLayoutValidation", true);
+        root.put("supportsDataState", true);
+        root.put("supportsDateKind", true);
+        root.put("supportsSignatureKind", true);
         root.put("supportsAppend", true);
         root.put("supportsReplaceDocument", true);
         root.put("supportsClearDocument", true);
         root.put("supportsReplacePage", true);
         root.put("supportsClearPage", true);
-        root.put("supportsProfileReadWrite", true);
-        root.put("supportsEditorStateControl", true);
 
         JSONObject placement = new JSONObject();
-        placement.put("page", "1-based page number");
-        placement.put("x", "0.0 to 1.0 from left edge. For text this is the alignment anchor; for checkbox this is the exact center.");
-        placement.put("y", "0.0 to 1.0 from top edge. For text this is the exact baseline; for checkbox this is the exact center.");
-        placement.put("text", "text to write; use X for a selected checkbox");
-        placement.put("kind", "text or checkbox");
-        placement.put("checked", "true for a selected checkbox");
-        placement.put("size", "font size in PDF page units, 4 to 144; choose explicitly");
+        placement.put("overlay_id", "stable unique id used for later local corrections");
+        placement.put("page_index", "0-based page index");
+        placement.put("x", "strict 0.0..1.0 from left; text alignment anchor or checkbox center");
+        placement.put("y", "strict 0.0..1.0 from top; exact text baseline or checkbox center");
+        placement.put("text", "text to write; use X/✓/● for checkbox if checked");
+        placement.put("kind", "text, checkbox, date or signature");
+        placement.put("size", "font size in PDF page units, 4..144");
         placement.put("align", "left, center or right");
-        placement.put("width", "optional normalized width metadata; application does not auto-fit");
-        placement.put("height", "optional normalized height metadata; application does not auto-fit");
+        placement.put("width", "optional normalized expected field width; no auto-fit");
+        placement.put("height", "optional normalized expected field height; no auto-fit");
+        placement.put("data_state", "known, unknown, requires_user or requires_signature");
         root.put("placementSchema", placement);
         return root;
     }
@@ -107,16 +146,22 @@ public final class AiFillPlan {
     public static JSONObject pageContext(int pageIndex, int pageCount, int pixelWidth, int pixelHeight,
                                          List<FormField> detectedFields) throws Exception {
         JSONObject root = new JSONObject();
+        root.put("page_index", pageIndex);
         root.put("page", pageIndex + 1);
         root.put("pageCount", pageCount);
         root.put("pixelWidth", pixelWidth);
         root.put("pixelHeight", pixelHeight);
         root.put("coordinateSystem", "normalized-0-to-1");
+        root.put("textYReference", "baseline");
+        root.put("checkboxXYReference", "center");
 
         JSONArray hints = new JSONArray();
         if (detectedFields != null) {
+            int index = 0;
             for (FormField field : detectedFields) {
                 JSONObject hint = new JSONObject();
+                hint.put("field_hint_id", "p" + pageIndex + "_hint_" + index++);
+                hint.put("page_index", pageIndex);
                 hint.put("x", field.x);
                 hint.put("y", field.y);
                 hint.put("width", field.width);
@@ -127,20 +172,24 @@ public final class AiFillPlan {
             }
         }
         root.put("detectedFieldHints", hints);
-        root.put("note", "Hints are advisory only. Final x/y/size/align from ChatGPT are authoritative and are not snapped by the application.");
+        root.put("note", "Hints are advisory only. ChatGPT x/y/size/align are authoritative and never snapped.");
         return root;
     }
 
-    private static float normalizeCoordinate(double value) {
-        double normalized = value;
-        if (normalized > 1.0 && normalized <= 100.0) normalized /= 100.0;
-        return (float) Math.max(0.0, Math.min(1.0, normalized));
+    private static float strictCoordinate(JSONObject item, String key) throws Exception {
+        if (!item.has(key)) throw new IllegalArgumentException(key + " manquant");
+        double value = item.getDouble(key);
+        if (!Double.isFinite(value) || value < 0.0 || value > 1.0) {
+            throw new IllegalArgumentException(key + " doit être compris strictement entre 0 et 1");
+        }
+        return (float) value;
     }
 
-    private static float normalizeOptionalSize(double value) {
+    private static float strictOptionalCoordinate(double value, String key) {
         if (value <= 0.0) return 0f;
-        double normalized = value;
-        if (normalized > 1.0 && normalized <= 100.0) normalized /= 100.0;
-        return (float) Math.max(0.0, Math.min(1.0, normalized));
+        if (!Double.isFinite(value) || value > 1.0) {
+            throw new IllegalArgumentException(key + " doit être compris entre 0 et 1");
+        }
+        return (float) value;
     }
 }
