@@ -38,7 +38,7 @@ public final class McpClient {
         void onError(String message);
     }
 
-    private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor();
+    private static final ExecutorService EXECUTOR = Executors.newFixedThreadPool(3);
     private static final int MAX_RESPONSE_CHARS = 3_000_000;
 
     private McpClient() {
@@ -153,6 +153,44 @@ public final class McpClient {
                 );
             } catch (Exception e) {
                 callback.onError("Erreur de lecture MCP : " + safeMessage(e));
+            }
+        });
+    }
+
+    public static void waitJob(String endpoint, String token, String jobId,
+                               JobStatusCallback callback) {
+        EXECUTOR.execute(() -> {
+            try {
+                JSONObject request = new JSONObject();
+                request.put("action", "wait_job");
+                request.put("job_id", jobId);
+
+                HttpResult result = postJson(endpoint, token, request, 15000, 35000);
+                if (result.code < 200 || result.code >= 300) {
+                    callback.onError("Pont ChatGPT refusé (HTTP " + result.code + ") : "
+                            + abbreviate(result.body, 1200));
+                    return;
+                }
+
+                JSONObject root = new JSONObject(result.body);
+                if (!root.optBoolean("ok", false)) {
+                    callback.onError(root.optString("error", "Pont ChatGPT indisponible"));
+                    return;
+                }
+
+                JSONObject job = root.optJSONObject("job");
+                if (job == null) {
+                    callback.onError("Réponse du pont incomplète");
+                    return;
+                }
+
+                callback.onStatus(
+                        job.optString("status", "pending"),
+                        job.optJSONObject("fill_plan"),
+                        job.optString("error_message", "")
+                );
+            } catch (Exception e) {
+                callback.onError("Erreur du pont ChatGPT : " + safeMessage(e));
             }
         });
     }
