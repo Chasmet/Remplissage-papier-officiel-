@@ -1,7 +1,10 @@
 package com.chasmet.remplissagepapierofficiel;
 
 import android.app.Activity;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
@@ -20,6 +23,8 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import androidx.core.content.ContextCompat;
 
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader;
 import com.tom_roush.pdfbox.pdmodel.PDDocument;
@@ -98,6 +103,24 @@ public class EditorActivity extends Activity {
     private volatile boolean mcpBusy;
     private boolean mcpForeground;
     private long mcpBackgroundUntilElapsed;
+    private boolean bridgeReceiverRegistered;
+
+    private final BroadcastReceiver mcpBridgeReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent == null || !McpBridgeService.ACTION_UPDATED.equals(intent.getAction())) return;
+            String jobId = intent.getStringExtra(McpBridgeService.EXTRA_JOB_ID);
+            if (jobId == null || !jobId.equals(mcpJobId)) return;
+
+            List<TextOverlay> updated = McpBridgeStore.loadOverlays(
+                    EditorActivity.this, jobId);
+            overlays.clear();
+            overlays.addAll(updated);
+            saveDraft(true);
+            renderCurrentPage();
+            tvPosition.setText("ChatGPT a mis à jour le document • contrôle visuel synchronisé.");
+        }
+    };
 
     private final Handler mcpHandler = new Handler(Looper.getMainLooper());
     private final Runnable mcpPollRunnable = new Runnable() {
@@ -112,9 +135,14 @@ public class EditorActivity extends Activity {
                 String endpoint = settings.getString("mcpUrl", "").trim();
                 String token = settings.getString("mcpToken", "").trim();
                 if (!endpoint.isEmpty()) {
+                    String bridgeJob = McpBridgeStore.getActiveJobId(EditorActivity.this);
+                    boolean serviceOwnsJob = mcpJobId != null
+                            && !mcpJobId.isEmpty()
+                            && mcpJobId.equals(bridgeJob);
+
                     if (mcpJobId == null || mcpJobId.isEmpty()) {
                         autoQueueOrFetchChatGpt();
-                    } else {
+                    } else if (!serviceOwnsJob) {
                         fetchChatGptResult(endpoint, token, false);
                     }
                 }
@@ -311,6 +339,8 @@ public class EditorActivity extends Activity {
 
     private void openPdf(Uri uri, Intent data, int requestedPage) {
         if (sourceUri != null && mcpJobId != null && !mcpJobId.isEmpty()) {
+            McpBridgeStore.clearActiveJob(this, mcpJobId);
+            stopService(new Intent(this, McpBridgeService.class));
             deactivateCurrentMcpDocument();
         }
         closePdf();
@@ -367,6 +397,9 @@ public class EditorActivity extends Activity {
             if (inboundNeedsContextSync) {
                 syncInboundDocumentContext();
             } else {
+                if (mcpJobId != null && !mcpJobId.isEmpty()) {
+                    ensurePersistentMcpBridge();
+                }
                 autoQueueOrFetchChatGpt();
             }
         } catch (Exception e) {
@@ -620,6 +653,14 @@ public class EditorActivity extends Activity {
                 JSONObject profile = buildMcpProfile();
                 JSONArray fieldHints = buildMcpFieldHints(pageCount, document);
 
+                McpBridgeStore.attachJob(
+                        EditorActivity.this,
+                        jobId,
+                        uriSnapshot,
+                        document.optString("name", "document.pdf"),
+                        new ArrayList<>(overlays));
+                startPersistentMcpBridgeService();
+
                 int uploadedPages = uploadMcpPageImages(endpoint, token, jobId, pageCount);
                 document.put("page_images_count", uploadedPages);
                 document.put("page_images_ready", uploadedPages == pageCount);
@@ -682,6 +723,14 @@ public class EditorActivity extends Activity {
 
                                 worker.execute(() -> {
                                     try {
+                                        McpBridgeStore.attachJob(
+                                                EditorActivity.this,
+                                                jobId,
+                                                uriSnapshot,
+                                                document.optString("name", "document.pdf"),
+                                                new ArrayList<>(overlays));
+                                        startPersistentMcpBridgeService();
+
                                         int uploadedPages = uploadMcpPageImages(
                                                 endpoint, token, jobId, pageCount);
                                         document.put("page_images_count", uploadedPages);
@@ -731,6 +780,40 @@ public class EditorActivity extends Activity {
                         "Préparation ChatGPT impossible : " + safeMessage(e)));
             }
         });
+    }
+
+    private void ensurePersistentMcpBridge() {
+        if (sourceUri == null || mcpJobId == null || mcpJobId.isEmpty()) return;
+
+        final Uri uriSnapshot = sourceUri;
+        final String jobId = mcpJobId;
+        final String name = currentDocumentNameOverride == null
+                || currentDocumentNameOverride.trim().isEmpty()
+                ? "document.pdf" : currentDocumentNameOverride.trim();
+        final List<TextOverlay> overlaySnapshot = new ArrayList<>(overlays);
+
+        worker.execute(() -> {
+            try {
+                McpBridgeStore.attachJob(
+                        EditorActivity.this,
+                        jobId,
+                        uriSnapshot,
+                        name,
+                        overlaySnapshot);
+                startPersistentMcpBridgeService();
+            } catch (Exception e) {
+                AppLog.write(EditorActivity.this, "ensurePersistentMcpBridge", e);
+            }
+        });
+    }
+
+    private void startPersistentMcpBridgeService() {
+        try {
+            Intent serviceIntent = new Intent(this, McpBridgeService.class);
+            ContextCompat.startForegroundService(this, serviceIntent);
+        } catch (Exception e) {
+            AppLog.write(this, "startPersistentMcpBridgeService", e);
+        }
     }
 
     private int uploadMcpPageImages(String endpoint, String token,
@@ -1579,6 +1662,11 @@ public class EditorActivity extends Activity {
             } else {
                 edit.apply();
             }
+
+            if (mcpJobId != null && !mcpJobId.isEmpty()
+                    && mcpJobId.equals(McpBridgeStore.getActiveJobId(this))) {
+                McpBridgeStore.saveOverlays(this, mcpJobId, new ArrayList<>(overlays));
+            }
         } catch (Exception e) {
             AppLog.write(this, "saveDraft", e);
         }
@@ -1763,12 +1851,50 @@ public class EditorActivity extends Activity {
     }
 
     @Override
+    protected void onStart() {
+        super.onStart();
+        if (!bridgeReceiverRegistered) {
+            ContextCompat.registerReceiver(
+                    this,
+                    mcpBridgeReceiver,
+                    new IntentFilter(McpBridgeService.ACTION_UPDATED),
+                    ContextCompat.RECEIVER_NOT_EXPORTED);
+            bridgeReceiverRegistered = true;
+        }
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
         mcpForeground = true;
         mcpBackgroundUntilElapsed = 0L;
+
+        if (mcpJobId != null && !mcpJobId.isEmpty()
+                && mcpJobId.equals(McpBridgeStore.getActiveJobId(this))) {
+            startPersistentMcpBridgeService();
+            List<TextOverlay> bridgeOverlays =
+                    McpBridgeStore.loadOverlays(this, mcpJobId);
+            if (!bridgeOverlays.isEmpty() || overlays.isEmpty()) {
+                overlays.clear();
+                overlays.addAll(bridgeOverlays);
+                renderCurrentPage();
+            }
+        }
+
         mcpHandler.removeCallbacks(mcpPollRunnable);
         mcpHandler.post(mcpPollRunnable);
+    }
+
+    @Override
+    protected void onStop() {
+        if (bridgeReceiverRegistered) {
+            try {
+                unregisterReceiver(mcpBridgeReceiver);
+            } catch (Exception ignored) {
+            }
+            bridgeReceiverRegistered = false;
+        }
+        super.onStop();
     }
 
     @Override
