@@ -3,6 +3,10 @@ name: Build Android APK
 on:
   push:
     branches: [ main ]
+    paths-ignore:
+      - 'supabase/**'
+      - '.github/workflows/android.yml'
+      - '**/*.md'
   workflow_dispatch:
 
 permissions:
