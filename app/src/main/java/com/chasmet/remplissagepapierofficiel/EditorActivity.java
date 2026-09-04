@@ -307,14 +307,8 @@ public class EditorActivity extends Activity {
             }
             sourceUri = uri;
             draftKey = buildDraftKey(uri);
-            if (data != null) {
-                getSharedPreferences(DRAFT_PREFS, MODE_PRIVATE)
-                        .edit()
-                        .remove(draftKey + MCP_JOB_SUFFIX)
-                        .remove(draftKey + MCP_JOB_VERSION_SUFFIX)
-                        .remove(draftKey + MCP_COMMAND_SUFFIX)
-                        .apply();
-            }
+            // Reopening the same PDF must keep its MCP job. This lets a ready
+            // ChatGPT command survive an in-place application update.
             loadMcpJobForDraft();
             pageIndex = 0;
             overlays.clear();
