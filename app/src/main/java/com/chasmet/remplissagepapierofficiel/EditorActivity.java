@@ -725,6 +725,21 @@ public class EditorActivity extends Activity {
             @Override
             public void onError(String message) {
                 runOnUiThread(() -> {
+                    String lower = message == null ? "" : message.toLowerCase(Locale.ROOT);
+                    boolean staleJob = lower.contains("404")
+                            || lower.contains("introuvable")
+                            || lower.contains("expir");
+
+                    if (staleJob) {
+                        mcpBusy = false;
+                        clearPersistedMcpJob();
+                        if (!destroyed && !isFinishing() && sourceUri != null) {
+                            tvPosition.setText("Ancien lien MCP supprimé • resynchronisation du PDF…");
+                            autoQueueOrFetchChatGpt();
+                        }
+                        return;
+                    }
+
                     if (userRequested) {
                         finishMcpError(message);
                     } else {
