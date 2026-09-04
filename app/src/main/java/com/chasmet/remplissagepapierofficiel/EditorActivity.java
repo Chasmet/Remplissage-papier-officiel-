@@ -12,6 +12,8 @@ import android.graphics.pdf.PdfDocument;
 import android.graphics.pdf.PdfRenderer;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.widget.Button;
 import android.widget.EditText;
@@ -53,6 +55,9 @@ public class EditorActivity extends Activity {
     private static final String STATE_TEXT_SIZE = "text_size";
     private static final String SETTINGS_PREFS = "settings";
     private static final String MCP_JOB_SUFFIX = "_mcp_job";
+    private static final String MCP_JOB_VERSION_SUFFIX = "_mcp_job_version";
+    private static final String MCP_COMMAND_SUFFIX = "_mcp_last_command";
+    private static final long MCP_POLL_INTERVAL_MS = 2500L;
     private static final int MAX_TEXT_PER_PAGE = 6000;
     private static final int MAX_TEXT_BLOCKS_PER_PAGE = 180;
 
@@ -78,6 +83,32 @@ public class EditorActivity extends Activity {
     private String draftKey;
     private String mcpJobId = "";
     private volatile boolean mcpBusy;
+    private boolean mcpForeground;
+
+    private final Handler mcpHandler = new Handler(Looper.getMainLooper());
+    private final Runnable mcpPollRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (destroyed || !mcpForeground) return;
+
+            if (sourceUri != null && getPageCountSafe() > 0 && !mcpBusy) {
+                SharedPreferences settings = getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE);
+                String endpoint = settings.getString("mcpUrl", "").trim();
+                String token = settings.getString("mcpToken", "").trim();
+                if (!endpoint.isEmpty()) {
+                    if (mcpJobId == null || mcpJobId.isEmpty()) {
+                        autoQueueOrFetchChatGpt();
+                    } else {
+                        fetchChatGptResult(endpoint, token, false);
+                    }
+                }
+            }
+
+            if (!destroyed && mcpForeground) {
+                mcpHandler.postDelayed(this, MCP_POLL_INTERVAL_MS);
+            }
+        }
+    };
 
     private final Object rendererLock = new Object();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -280,6 +311,8 @@ public class EditorActivity extends Activity {
                 getSharedPreferences(DRAFT_PREFS, MODE_PRIVATE)
                         .edit()
                         .remove(draftKey + MCP_JOB_SUFFIX)
+                        .remove(draftKey + MCP_JOB_VERSION_SUFFIX)
+                        .remove(draftKey + MCP_COMMAND_SUFFIX)
                         .apply();
             }
             loadMcpJobForDraft();
@@ -569,13 +602,23 @@ public class EditorActivity extends Activity {
 
                     if ("ready".equalsIgnoreCase(status) && fillPlan != null) {
                         try {
-                            int changed = applyMcpPlan(fillPlan);
-                            saveDraft(true);
-                            clearPersistedMcpJob();
+                            String commandId = fillPlan.optString("command_id", "").trim();
+                            if (commandId.isEmpty()) {
+                                commandId = "legacy-" + Integer.toHexString(fillPlan.toString().hashCode());
+                            }
+
+                            String lastApplied = getLastAppliedMcpCommand();
+                            int changed = 0;
+                            if (!commandId.equals(lastApplied)) {
+                                changed = applyMcpPlan(fillPlan);
+                                saveDraft(true);
+                                rememberAppliedMcpCommand(commandId);
+                                renderCurrentPage();
+                            }
+
                             tvPosition.setText("Commande ChatGPT appliquée • "
-                                    + changed + " élément(s) de document modifié(s).");
-                            renderCurrentPage();
-                            autoQueueOrFetchChatGpt();
+                                    + changed + " nouvel(aux) élément(s). Confirmation au serveur…");
+                            acknowledgeMcpApplied(endpoint, token, requestedJob, commandId);
                         } catch (Exception e) {
                             AppLog.write(EditorActivity.this, "applyMcpPlan", e);
                             finishMcpError("Commande ChatGPT invalide : " + safeMessage(e));
@@ -599,9 +642,41 @@ public class EditorActivity extends Activity {
 
             @Override
             public void onError(String message) {
-                runOnUiThread(() -> finishMcpError(message));
+                runOnUiThread(() -> {
+                    if (userRequested) {
+                        finishMcpError(message);
+                    } else {
+                        mcpBusy = false;
+                        if (!destroyed && !isFinishing()) {
+                            tvPosition.setText("Synchronisation ChatGPT en attente…");
+                        }
+                    }
+                });
             }
         });
+    }
+
+    private void acknowledgeMcpApplied(String endpoint, String token, String jobId,
+                                       String commandId) throws Exception {
+        final JSONArray current = buildMcpCurrentOverlays();
+        final JSONObject profile = buildMcpProfile();
+        final int currentPage = pageIndex;
+        final float textSize = currentTextSize;
+
+        mcpBusy = true;
+        McpClient.acknowledgeApplied(endpoint, token, jobId, commandId,
+                current, profile, currentPage, textSize,
+                (success, message) -> runOnUiThread(() -> {
+                    mcpBusy = false;
+                    if (destroyed || isFinishing() || !jobId.equals(mcpJobId)) return;
+
+                    if (success) {
+                        tvPosition.setText("Document synchronisé avec ChatGPT • "
+                                + current.length() + " élément(s) appliqué(s).");
+                    } else {
+                        tvPosition.setText("Document rempli localement • confirmation MCP à réessayer.");
+                    }
+                }));
     }
 
     private int applyMcpPlan(JSONObject fillPlan) throws Exception {
@@ -897,10 +972,21 @@ public class EditorActivity extends Activity {
             mcpJobId = "";
             return;
         }
-        mcpJobId = getSharedPreferences(DRAFT_PREFS, MODE_PRIVATE)
-                .getString(draftKey + MCP_JOB_SUFFIX, "");
-        if (mcpJobId == null) mcpJobId = "";
 
+        SharedPreferences prefs = getSharedPreferences(DRAFT_PREFS, MODE_PRIVATE);
+        String savedVersion = prefs.getString(draftKey + MCP_JOB_VERSION_SUFFIX, "");
+        if (!BuildConfig.VERSION_NAME.equals(savedVersion)) {
+            prefs.edit()
+                    .remove(draftKey + MCP_JOB_SUFFIX)
+                    .remove(draftKey + MCP_JOB_VERSION_SUFFIX)
+                    .remove(draftKey + MCP_COMMAND_SUFFIX)
+                    .apply();
+            mcpJobId = "";
+            return;
+        }
+
+        mcpJobId = prefs.getString(draftKey + MCP_JOB_SUFFIX, "");
+        if (mcpJobId == null) mcpJobId = "";
     }
 
     private void persistMcpJob() {
@@ -908,6 +994,22 @@ public class EditorActivity extends Activity {
         getSharedPreferences(DRAFT_PREFS, MODE_PRIVATE)
                 .edit()
                 .putString(draftKey + MCP_JOB_SUFFIX, mcpJobId)
+                .putString(draftKey + MCP_JOB_VERSION_SUFFIX, BuildConfig.VERSION_NAME)
+                .remove(draftKey + MCP_COMMAND_SUFFIX)
+                .apply();
+    }
+
+    private String getLastAppliedMcpCommand() {
+        if (draftKey == null) return "";
+        return getSharedPreferences(DRAFT_PREFS, MODE_PRIVATE)
+                .getString(draftKey + MCP_COMMAND_SUFFIX, "");
+    }
+
+    private void rememberAppliedMcpCommand(String commandId) {
+        if (draftKey == null || commandId == null || commandId.isEmpty()) return;
+        getSharedPreferences(DRAFT_PREFS, MODE_PRIVATE)
+                .edit()
+                .putString(draftKey + MCP_COMMAND_SUFFIX, commandId)
                 .apply();
     }
 
@@ -916,6 +1018,8 @@ public class EditorActivity extends Activity {
             getSharedPreferences(DRAFT_PREFS, MODE_PRIVATE)
                     .edit()
                     .remove(draftKey + MCP_JOB_SUFFIX)
+                    .remove(draftKey + MCP_JOB_VERSION_SUFFIX)
+                    .remove(draftKey + MCP_COMMAND_SUFFIX)
                     .apply();
         }
         mcpJobId = "";
@@ -1278,16 +1382,15 @@ public class EditorActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (draftKey != null && mcpJobId != null && !mcpJobId.isEmpty() && !mcpBusy) {
-            SharedPreferences settings = getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE);
-            String endpoint = settings.getString("mcpUrl", "").trim();
-            String token = settings.getString("mcpToken", "").trim();
-            if (!endpoint.isEmpty()) fetchChatGptResult(endpoint, token, false);
-        }
+        mcpForeground = true;
+        mcpHandler.removeCallbacks(mcpPollRunnable);
+        mcpHandler.post(mcpPollRunnable);
     }
 
     @Override
     protected void onPause() {
+        mcpForeground = false;
+        mcpHandler.removeCallbacks(mcpPollRunnable);
         if (draftKey != null) saveDraft(true);
         super.onPause();
     }
@@ -1328,6 +1431,8 @@ public class EditorActivity extends Activity {
         destroyed = true;
         renderGeneration.incrementAndGet();
         if (draftKey != null) saveDraft(true);
+        mcpForeground = false;
+        mcpHandler.removeCallbacksAndMessages(null);
         worker.shutdownNow();
         closePdf();
         super.onDestroy();
