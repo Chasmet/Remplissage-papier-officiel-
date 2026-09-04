@@ -3,7 +3,8 @@ package com.chasmet.remplissagepapierofficiel;
 public class FormField {
     public enum Type {
         LINE,
-        BOX
+        BOX,
+        CHECKBOX
     }
 
     public final int pageIndex;
@@ -42,6 +43,9 @@ public class FormField {
     }
 
     public float textBaselineY() {
+        if (type == Type.CHECKBOX) {
+            return Math.min(0.99f, y + height * 0.72f);
+        }
         if (type == Type.BOX) {
             return Math.min(0.99f, y + height * 0.70f);
         }
