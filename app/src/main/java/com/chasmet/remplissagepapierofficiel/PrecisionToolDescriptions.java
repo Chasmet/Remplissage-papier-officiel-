@@ -1,0 +1,3 @@
+package com.chasmet.remplissagepapierofficiel;
+import org.json.JSONObject;
+public final class PrecisionToolDescriptions { private PrecisionToolDescriptions(){} public static JSONObject json() throws Exception {return new JSONObject().put("update_overlay","Modify one overlay by overlay_id using absolute normalized coordinates or normalized deltas; never moves other overlays.").put("measure_text","Measure text width and font metrics before placement.").put("get_preview_crop","Return a high-resolution crop around one modified overlay.").put("validate_layout","Return advisory layout warnings without changing coordinates.");} }
