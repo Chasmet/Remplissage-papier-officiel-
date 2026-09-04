@@ -147,6 +147,42 @@ public final class McpClient {
         });
     }
 
+    public static void acknowledgeApplied(String endpoint, String token, String jobId,
+                                          String commandId, JSONArray currentOverlays,
+                                          JSONObject profile, int currentPageIndex,
+                                          float currentTextSize, Callback callback) {
+        EXECUTOR.execute(() -> {
+            try {
+                JSONObject request = new JSONObject();
+                request.put("action", "ack_applied");
+                request.put("job_id", jobId);
+                request.put("command_id", commandId == null ? "" : commandId);
+                request.put("current_overlays",
+                        currentOverlays == null ? new JSONArray() : currentOverlays);
+                request.put("profile", profile == null ? new JSONObject() : profile);
+                request.put("current_page_index", currentPageIndex);
+                request.put("current_text_size", currentTextSize);
+
+                HttpResult result = postJson(endpoint, token, request, 15000, 30000);
+                if (result.code < 200 || result.code >= 300) {
+                    callback.onResult(false, "Confirmation refusée (HTTP " + result.code + ") : "
+                            + abbreviate(result.body, 1200));
+                    return;
+                }
+
+                JSONObject root = new JSONObject(result.body);
+                if (!root.optBoolean("ok", false)) {
+                    callback.onResult(false,
+                            root.optString("error", "Le serveur n’a pas confirmé l’application"));
+                    return;
+                }
+                callback.onResult(true, "Application confirmée");
+            } catch (Exception e) {
+                callback.onResult(false, "Erreur de confirmation MCP : " + safeMessage(e));
+            }
+        });
+    }
+
     private static HttpResult postJson(String endpoint, String token, JSONObject payload,
                                        int connectTimeout, int readTimeout) throws Exception {
         if (endpoint == null || !endpoint.startsWith("https://")) {
