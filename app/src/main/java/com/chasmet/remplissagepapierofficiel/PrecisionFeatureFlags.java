@@ -1,0 +1,2 @@
+package com.chasmet.remplissagepapierofficiel;
+public final class PrecisionFeatureFlags { private PrecisionFeatureFlags(){} public static final boolean STRICT_COORDINATES=true; public static final boolean LOCAL_CORRECTIONS=true; public static final boolean AUTOMATIC_PREVIEW=true; public static final boolean TARGETED_CROPS=true; public static final boolean AUTO_SNAP=false; public static final boolean AUTO_REPOSITION=false; }
