@@ -29,6 +29,7 @@ import com.tom_roush.pdfbox.text.TextPosition;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -598,6 +599,10 @@ public class EditorActivity extends Activity {
                 JSONObject profile = buildMcpProfile();
                 JSONArray fieldHints = buildMcpFieldHints(pageCount, document);
 
+                int uploadedPages = uploadMcpPageImages(endpoint, token, jobId, pageCount);
+                document.put("page_images_count", uploadedPages);
+                document.put("page_images_ready", uploadedPages == pageCount);
+
                 McpClient.updateJobContext(endpoint, token, jobId,
                         document, profile, fieldHints,
                         (success, message) -> runOnUiThread(() -> {
@@ -606,7 +611,10 @@ public class EditorActivity extends Activity {
                             if (destroyed || isFinishing() || !jobId.equals(mcpJobId)) return;
 
                             if (success) {
-                                tvPosition.setText("PDF reçu et synchronisé avec ChatGPT.");
+                                tvPosition.setText(uploadedPages == pageCount
+                                        ? "PDF reçu • pages visibles par ChatGPT."
+                                        : "PDF reçu • " + uploadedPages + "/" + pageCount
+                                        + " page(s) visuelle(s) synchronisée(s).");
                                 fetchChatGptResult(endpoint, token, false);
                             } else {
                                 tvPosition.setText(message);
@@ -645,14 +653,49 @@ public class EditorActivity extends Activity {
                             @Override
                             public void onCreated(String jobId, String status) {
                                 runOnUiThread(() -> {
-                                    mcpBusy = false;
                                     if (destroyed || isFinishing()) return;
                                     mcpJobId = jobId;
                                     persistMcpJob();
-                                    tvPosition.setText("Document disponible dans ChatGPT. Demandez simplement : « remplis le document ».");
-                                    Toast.makeText(EditorActivity.this,
-                                            "Document envoyé à ChatGPT",
-                                            Toast.LENGTH_LONG).show();
+                                    tvPosition.setText("Document envoyé • préparation des pages visuelles pour ChatGPT…");
+                                });
+
+                                worker.execute(() -> {
+                                    try {
+                                        int uploadedPages = uploadMcpPageImages(
+                                                endpoint, token, jobId, pageCount);
+                                        document.put("page_images_count", uploadedPages);
+                                        document.put("page_images_ready", uploadedPages == pageCount);
+
+                                        McpClient.updateJobContext(endpoint, token, jobId,
+                                                document, profile, fieldHints,
+                                                (success, message) -> runOnUiThread(() -> {
+                                                    mcpBusy = false;
+                                                    if (destroyed || isFinishing()
+                                                            || !jobId.equals(mcpJobId)) return;
+
+                                                    if (success) {
+                                                        tvPosition.setText(uploadedPages == pageCount
+                                                                ? "Document prêt • ChatGPT peut voir toutes les pages."
+                                                                : "Document prêt • " + uploadedPages + "/"
+                                                                + pageCount + " page(s) visuelle(s) disponibles.");
+                                                        Toast.makeText(EditorActivity.this,
+                                                                "Document disponible dans ChatGPT",
+                                                                Toast.LENGTH_LONG).show();
+                                                    } else {
+                                                        tvPosition.setText(message);
+                                                    }
+                                                }));
+                                    } catch (Exception e) {
+                                        AppLog.write(EditorActivity.this,
+                                                "uploadMcpPageImages", e);
+                                        runOnUiThread(() -> {
+                                            mcpBusy = false;
+                                            if (!destroyed && !isFinishing()) {
+                                                tvPosition.setText("Document envoyé, mais pages visuelles incomplètes : "
+                                                        + safeMessage(e));
+                                            }
+                                        });
+                                    }
                                 });
                             }
 
@@ -667,6 +710,76 @@ public class EditorActivity extends Activity {
                         "Préparation ChatGPT impossible : " + safeMessage(e)));
             }
         });
+    }
+
+    private int uploadMcpPageImages(String endpoint, String token,
+                                    String jobId, int pageCount) {
+        int uploaded = 0;
+
+        for (int i = 0; i < pageCount; i++) {
+            Bitmap renderedBitmap = null;
+            Bitmap uploadBitmap = null;
+            try {
+                RenderedPage rendered = renderPage(i, false);
+                renderedBitmap = rendered.bitmap;
+                uploadBitmap = scaleForMcpVision(renderedBitmap, 1200);
+
+                byte[] jpeg = encodeMcpJpeg(uploadBitmap);
+                McpClient.uploadPageImageBlocking(
+                        endpoint, token, jobId, i, jpeg);
+                uploaded++;
+
+                final int progress = uploaded;
+                runOnUiThread(() -> {
+                    if (!destroyed && !isFinishing() && jobId.equals(mcpJobId)) {
+                        tvPosition.setText("Analyse visuelle ChatGPT • "
+                                + progress + "/" + pageCount + " page(s)");
+                    }
+                });
+            } catch (Exception e) {
+                AppLog.write(this, "uploadMcpPageImage page=" + i, e);
+            } finally {
+                if (uploadBitmap != null && uploadBitmap != renderedBitmap) {
+                    recycle(uploadBitmap);
+                }
+                recycle(renderedBitmap);
+            }
+        }
+
+        return uploaded;
+    }
+
+    private Bitmap scaleForMcpVision(Bitmap source, int maxDimension) {
+        if (source == null || source.isRecycled()) return source;
+        int width = source.getWidth();
+        int height = source.getHeight();
+        int largest = Math.max(width, height);
+        if (largest <= maxDimension) return source;
+
+        float scale = maxDimension / (float) largest;
+        int targetWidth = Math.max(1, Math.round(width * scale));
+        int targetHeight = Math.max(1, Math.round(height * scale));
+        return Bitmap.createScaledBitmap(source, targetWidth, targetHeight, true);
+    }
+
+    private byte[] encodeMcpJpeg(Bitmap bitmap) throws IOException {
+        if (bitmap == null || bitmap.isRecycled()) {
+            throw new IOException("Page visuelle indisponible");
+        }
+
+        int[] qualities = new int[]{78, 68, 58, 48};
+        for (int quality : qualities) {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, quality, output)) {
+                continue;
+            }
+            byte[] bytes = output.toByteArray();
+            if (bytes.length >= 100 && bytes.length <= 1_450_000) {
+                return bytes;
+            }
+        }
+
+        throw new IOException("Page visuelle trop volumineuse");
     }
 
     private void fetchChatGptResult(String endpoint, String token, boolean userRequested) {
