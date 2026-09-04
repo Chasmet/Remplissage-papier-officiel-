@@ -18,6 +18,7 @@ import android.graphics.pdf.PdfRenderer;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
+import android.os.SystemClock;
 
 import androidx.core.app.NotificationCompat;
 
@@ -50,6 +51,7 @@ public class McpBridgeService extends Service {
             Executors.newSingleThreadScheduledExecutor();
     private final AtomicBoolean busy = new AtomicBoolean(false);
     private volatile boolean stopped;
+    private long noDocumentSinceElapsed;
 
     @Override
     public void onCreate() {
@@ -85,10 +87,16 @@ public class McpBridgeService extends Service {
         String jobId = McpBridgeStore.getActiveJobId(this);
         File source = McpBridgeStore.getSourceFile(this, jobId);
         if (jobId == null || jobId.isEmpty() || source == null || !source.isFile()) {
+            if (noDocumentSinceElapsed == 0L) {
+                noDocumentSinceElapsed = SystemClock.elapsedRealtime();
+            }
             busy.set(false);
-            stopSelf();
+            if (SystemClock.elapsedRealtime() - noDocumentSinceElapsed > 120_000L) {
+                stopSelf();
+            }
             return;
         }
+        noDocumentSinceElapsed = 0L;
 
         SharedPreferences settings = getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE);
         String endpoint = settings.getString("mcpUrl", "").trim();
