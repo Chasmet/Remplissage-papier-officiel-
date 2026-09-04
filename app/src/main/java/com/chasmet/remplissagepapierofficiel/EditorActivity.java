@@ -924,6 +924,33 @@ public class EditorActivity extends Activity {
         });
     }
 
+    private void drawOverlayExact(Canvas canvas, Paint textPaint, TextOverlay overlay,
+                                  int pageWidth, int pageHeight, float textScale) {
+        if (overlay == null || overlay.text == null || overlay.text.isEmpty()) return;
+
+        float safeScale = Math.max(0.0001f, textScale);
+        textPaint.setTextSize(Math.max(1f, overlay.textSize * safeScale));
+        textPaint.setTextAlign(toPaintAlign(overlay.align));
+
+        float x = overlay.x * pageWidth;
+        float y = overlay.y * pageHeight;
+
+        if (overlay.isCheckbox()) {
+            textPaint.setTextAlign(Paint.Align.CENTER);
+            Paint.FontMetrics fm = textPaint.getFontMetrics();
+            y = y - (fm.ascent + fm.descent) * 0.5f;
+        }
+
+        canvas.drawText(overlay.text, x, y, textPaint);
+        textPaint.setTextAlign(Paint.Align.LEFT);
+    }
+
+    private static Paint.Align toPaintAlign(String align) {
+        if (TextOverlay.ALIGN_CENTER.equals(align)) return Paint.Align.CENTER;
+        if (TextOverlay.ALIGN_RIGHT.equals(align)) return Paint.Align.RIGHT;
+        return Paint.Align.LEFT;
+    }
+
     private void writeFilledPdfFile(File target, List<TextOverlay> overlaySnapshot) throws Exception {
         PdfDocument out = new PdfDocument();
         Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -947,13 +974,10 @@ public class EditorActivity extends Activity {
                             new RectF(0f, 0f, rendered.pageWidth, rendered.pageHeight), bitmapPaint);
 
                     for (TextOverlay overlay : overlaySnapshot) {
-                        if (overlay.pageIndex != i) continue;
-                        textPaint.setTextSize(overlay.textSize);
-                        canvas.drawText(overlay.text,
-                                overlay.x * rendered.pageWidth,
-                                overlay.y * rendered.pageHeight,
-                                textPaint);
-                    }
+                            if (overlay.pageIndex != i) continue;
+                            drawOverlayExact(canvas, textPaint, overlay,
+                                    rendered.pageWidth, rendered.pageHeight, 1f);
+                        }
 
                     out.finishPage(dest);
                     dest = null;
@@ -980,163 +1004,11 @@ public class EditorActivity extends Activity {
         }
     }
 
-    private List<TextOverlay> smartAlignMcpOverlays(List<TextOverlay> incoming) {
-        List<TextOverlay> aligned = new ArrayList<>();
-        if (incoming == null) return aligned;
-
-        for (TextOverlay overlay : incoming) {
-            aligned.add(smartAlignMcpOverlay(overlay));
-        }
-        return aligned;
-    }
-
-    private TextOverlay smartAlignMcpOverlay(TextOverlay overlay) {
-        if (overlay == null) return null;
-
-        List<FormField> fields;
-        synchronized (detectedFieldsByPage) {
-            List<FormField> cached = detectedFieldsByPage.get(overlay.pageIndex);
-            fields = cached == null ? null : new ArrayList<>(cached);
-        }
-        if (fields == null || fields.isEmpty()) return overlay;
-
-        boolean checkboxMark = "X".equalsIgnoreCase(
-                overlay.text == null ? "" : overlay.text.trim());
-
-        FormField best = null;
-        float bestScore = Float.MAX_VALUE;
-
-        for (FormField field : fields) {
-            if (checkboxMark && field.type != FormField.Type.CHECKBOX) continue;
-            if (!checkboxMark && field.type == FormField.Type.CHECKBOX) continue;
-
-            float anchorX = field.type == FormField.Type.CHECKBOX
-                    ? field.centerX() : field.textX();
-            float anchorY = field.type == FormField.Type.CHECKBOX
-                    ? field.centerY() : field.textBaselineY();
-
-            float dy = Math.abs(overlay.y - anchorY);
-            float expandedLeft = field.x - 0.035f;
-            float expandedRight = field.x + field.width + 0.035f;
-            float horizontalGap;
-            if (overlay.x < expandedLeft) {
-                horizontalGap = expandedLeft - overlay.x;
-            } else if (overlay.x > expandedRight) {
-                horizontalGap = overlay.x - expandedRight;
-            } else {
-                horizontalGap = 0f;
-            }
-
-            if (checkboxMark) {
-                if (dy > 0.070f || horizontalGap > 0.070f) continue;
-            } else {
-                if (dy > 0.055f || horizontalGap > 0.160f) continue;
-            }
-
-            float centerDx = Math.abs(overlay.x - field.centerX());
-            float score = dy * 5.0f + horizontalGap * 2.0f + centerDx * 0.12f;
-            if (field.confidence >= 0.80f) score -= 0.015f;
-
-            if (score < bestScore) {
-                bestScore = score;
-                best = field;
-            }
-        }
-
-        if (best == null) return overlay;
-
-        try {
-            return fitOverlayInsideField(overlay, best);
-        } catch (Exception e) {
-            AppLog.write(this, "smartAlignMcpOverlay", e);
-            return new TextOverlay(
-                    overlay.pageIndex,
-                    best.type == FormField.Type.CHECKBOX ? best.centerX() : best.textX(),
-                    best.type == FormField.Type.CHECKBOX ? best.centerY() : best.textBaselineY(),
-                    overlay.text,
-                    Math.min(overlay.textSize, best.type == FormField.Type.CHECKBOX ? 8f : 9f)
-            );
-        }
-    }
-
-    private TextOverlay fitOverlayInsideField(TextOverlay overlay, FormField field) throws Exception {
-        int[] pageSize = getPdfPageSize(overlay.pageIndex);
-        int pageWidth = Math.max(1, pageSize[0]);
-        int pageHeight = Math.max(1, pageSize[1]);
-
-        Paint measurePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        float rawHeight = field.height * pageHeight;
-
-        float maxByHeight;
-        if (field.type == FormField.Type.CHECKBOX) {
-            maxByHeight = rawHeight * 0.72f;
-        } else if (field.type == FormField.Type.BOX) {
-            maxByHeight = rawHeight * 0.58f;
-        } else {
-            maxByHeight = rawHeight * 0.62f;
-        }
-
-        float textSize = Math.max(5.5f,
-                Math.min(overlay.textSize, Math.min(10f, maxByHeight)));
-        measurePaint.setTextSize(textSize);
-
-        float horizontalPadding = field.type == FormField.Type.CHECKBOX ? 1f : 2.2f;
-        float maxWidth = Math.max(4f, field.width * pageWidth - horizontalPadding * 2f);
-        float measured = measurePaint.measureText(overlay.text == null ? "" : overlay.text);
-        if (measured > maxWidth && measured > 0f) {
-            textSize = Math.max(5f, textSize * (maxWidth / measured));
-            measurePaint.setTextSize(textSize);
-        }
-
-        Paint.FontMetrics fm = measurePaint.getFontMetrics();
-        float xPx;
-        float baselinePx;
-
-        if (field.type == FormField.Type.CHECKBOX) {
-            float textWidth = measurePaint.measureText(overlay.text == null ? "" : overlay.text);
-            xPx = field.centerX() * pageWidth - textWidth * 0.5f;
-            baselinePx = field.centerY() * pageHeight - (fm.ascent + fm.descent) * 0.5f;
-        } else if (field.type == FormField.Type.BOX) {
-            xPx = field.x * pageWidth + horizontalPadding;
-            baselinePx = field.centerY() * pageHeight - (fm.ascent + fm.descent) * 0.5f;
-        } else {
-            xPx = field.x * pageWidth + horizontalPadding;
-            baselinePx = (field.y + field.height) * pageHeight
-                    - Math.max(1.2f, textSize * 0.16f);
-        }
-
-        float nx = clamp01(xPx / pageWidth);
-        float ny = clamp01(baselinePx / pageHeight);
-
-        return new TextOverlay(
-                overlay.pageIndex,
-                nx,
-                ny,
-                overlay.text,
-                textSize
-        );
-    }
-
-    private int[] getPdfPageSize(int index) throws Exception {
-        synchronized (rendererLock) {
-            if (renderer == null) throw new IOException("PDF fermé");
-            if (index < 0 || index >= renderer.getPageCount()) {
-                throw new IOException("Page invalide");
-            }
-            PdfRenderer.Page page = renderer.openPage(index);
-            try {
-                return new int[]{page.getWidth(), page.getHeight()};
-            } finally {
-                page.close();
-            }
-        }
-    }
-
     private int applyMcpPlan(JSONObject fillPlan) throws Exception {
         String mode = fillPlan.optString("mode", "append").trim().toLowerCase(Locale.ROOT);
         int targetPage = fillPlan.optInt("target_page", -1);
-        List<TextOverlay> incoming = smartAlignMcpOverlays(
-                AiFillPlan.parse(fillPlan.toString(), getPageCountSafe()));
+        List<TextOverlay> incoming = AiFillPlan.parse(
+                fillPlan.toString(), getPageCountSafe());
 
         int changed = 0;
         if ("replace_document".equals(mode) || "replace".equals(mode)) {
@@ -1250,6 +1122,9 @@ public class EditorActivity extends Activity {
                     JSONObject pageJson = new JSONObject();
                     pageJson.put("page_index", i);
                     pageJson.put("page_number", i + 1);
+                    pageJson.put("width", width);
+                    pageJson.put("height", height);
+                    pageJson.put("unit", "PDF page unit");
                     pageJson.put("plain_text", text);
                     pageJson.put("text_blocks", stripper.blocks);
                     pages.put(pageJson);
@@ -1258,10 +1133,12 @@ public class EditorActivity extends Activity {
         }
         root.put("pages", pages);
         root.put("instruction",
-                "ChatGPT a le contrôle fonctionnel du contenu du document : lecture complète, ajout, remplacement, "
-                        + "effacement de page ou du document, modification du profil et gestion des cases. "
-                        + "Les champs détectés sont des repères mais n'imposent aucune zone : l'écriture peut être placée librement. "
-                        + "Les placements utilisent page_index 0-based et x/y normalisés entre 0 et 1.");
+                "ChatGPT décide du placement final après inspection visuelle de la vraie page. "
+                        + "Les x/y, la taille, l'alignement et le kind renvoyés sont autoritaires. "
+                        + "L'application ne snap pas vers les champs détectés, ne corrige pas x/y et ne redimensionne pas le texte. "
+                        + "Pour kind=text : x est l'ancre d'alignement et y la baseline exacte. "
+                        + "Pour kind=checkbox : x/y sont le centre exact de la marque. "
+                        + "Les field_hints sont uniquement des indices facultatifs.");
         return root;
     }
 
@@ -1274,6 +1151,10 @@ public class EditorActivity extends Activity {
             item.put("y", overlay.y);
             item.put("text", overlay.text);
             item.put("size", overlay.textSize);
+            item.put("align", overlay.align);
+            item.put("kind", overlay.kind);
+            if (overlay.width > 0f) item.put("width", overlay.width);
+            if (overlay.height > 0f) item.put("height", overlay.height);
             items.put(item);
         }
         return items;
@@ -1343,7 +1224,8 @@ public class EditorActivity extends Activity {
                 hint.put("confidence", field.confidence);
                 hint.put("anchor_x", field.textX());
                 hint.put("baseline_y", field.textBaselineY());
-                hint.put("snap_required", true);
+                hint.put("snap_required", false);
+                hint.put("advisory_only", true);
                 hint.put("recommended_size",
                         field.type == FormField.Type.CHECKBOX ? 8 : 8);
 
@@ -1355,12 +1237,12 @@ public class EditorActivity extends Activity {
                     hint.put("mark_y", field.centerY());
                     hint.put("recommended_text", "X");
                     hint.put("semantic_instruction",
-                            "Case à cocher : renvoyer field_id et laisser l'application centrer le X. "
-                                    + "Pour un groupe Oui/Non, cocher une seule réponse sauf indication contraire.");
+                            "Indice facultatif. Vérifier la vraie case dans l'image de page. "
+                                    + "Le x/y final choisi par ChatGPT ne sera pas déplacé.");
                 } else {
                     hint.put("semantic_instruction",
-                            "Champ de texte : renvoyer field_id. L'application calcule l'alignement final; "
-                                    + "ne pas utiliser des coordonnées approximatives si ce champ correspond.");
+                            "Indice facultatif. Vérifier visuellement le champ. "
+                                    + "field_id n'entraîne aucun déplacement automatique.");
                 }
                 hints.put(hint);
             }
@@ -1614,7 +1496,11 @@ public class EditorActivity extends Activity {
                         clamp01((float) item.optDouble("x", 0.1)),
                         clamp01((float) item.optDouble("y", 0.1)),
                         text,
-                        Math.max(9f, Math.min(28f, (float) item.optDouble("size", 14.0)))
+                        Math.max(4f, Math.min(144f, (float) item.optDouble("size", 8.0))),
+                        TextOverlay.normalizeAlign(item.optString("align", TextOverlay.ALIGN_LEFT)),
+                        TextOverlay.normalizeKind(item.optString("kind", TextOverlay.KIND_TEXT)),
+                        clamp01((float) item.optDouble("width", 0.0)),
+                        clamp01((float) item.optDouble("height", 0.0))
                 ));
             }
             overlays.clear();
@@ -1637,6 +1523,10 @@ public class EditorActivity extends Activity {
                 item.put("y", overlay.y);
                 item.put("text", overlay.text);
                 item.put("size", overlay.textSize);
+                item.put("align", overlay.align);
+                item.put("kind", overlay.kind);
+                if (overlay.width > 0f) item.put("width", overlay.width);
+                if (overlay.height > 0f) item.put("height", overlay.height);
                 array.put(item);
             }
 
@@ -1710,11 +1600,8 @@ public class EditorActivity extends Activity {
 
                         for (TextOverlay overlay : overlaySnapshot) {
                             if (overlay.pageIndex != i) continue;
-                            textPaint.setTextSize(overlay.textSize);
-                            canvas.drawText(overlay.text,
-                                    overlay.x * rendered.pageWidth,
-                                    overlay.y * rendered.pageHeight,
-                                    textPaint);
+                            drawOverlayExact(canvas, textPaint, overlay,
+                                    rendered.pageWidth, rendered.pageHeight, 1f);
                         }
                         out.finishPage(dest);
                         dest = null;
@@ -1767,10 +1654,8 @@ public class EditorActivity extends Activity {
                 float textScale = Math.min(scaleX, scaleY);
 
                 for (TextOverlay overlay : overlaySnapshot) {
-                    textPaint.setTextSize(overlay.textSize * textScale);
-                    canvas.drawText(overlay.text,
-                            overlay.x * bitmap.getWidth(),
-                            overlay.y * bitmap.getHeight(), textPaint);
+                    drawOverlayExact(canvas, textPaint, overlay,
+                            bitmap.getWidth(), bitmap.getHeight(), textScale);
                 }
 
                 try (OutputStream stream = getContentResolver().openOutputStream(target, "w")) {
