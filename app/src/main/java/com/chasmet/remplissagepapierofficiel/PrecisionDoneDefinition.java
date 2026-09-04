@@ -1,0 +1,2 @@
+package com.chasmet.remplissagepapierofficiel;
+public final class PrecisionDoneDefinition { private PrecisionDoneDefinition(){} public static String text(){return "Done means: Android and MCP both support local overlay correction; every change produces a fresh full preview and targeted crops; ChatGPT validates the current revision; final PDF uses the same geometry; CI and permanent-signature release succeed.";} }
