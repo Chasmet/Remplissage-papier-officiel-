@@ -38,6 +38,12 @@ public final class McpClient {
         void onError(String message);
     }
 
+    public interface BridgeStatusCallback {
+        void onStatus(boolean chatGptConnected, long chatGptLastSeenMs,
+                      String jobStatus, String message);
+        void onError(String message);
+    }
+
     private static final ExecutorService EXECUTOR = Executors.newFixedThreadPool(3);
     private static final int MAX_RESPONSE_CHARS = 3_000_000;
 
@@ -116,6 +122,41 @@ public final class McpClient {
                 callback.onCreated(jobId, job.optString("status", "pending"));
             } catch (Exception e) {
                 callback.onError("Erreur d’envoi MCP : " + safeMessage(e));
+            }
+        });
+    }
+
+    public static void getBridgeStatus(String endpoint, String token, String jobId,
+                                       BridgeStatusCallback callback) {
+        EXECUTOR.execute(() -> {
+            try {
+                JSONObject request = new JSONObject();
+                request.put("action", "bridge_status");
+                request.put("job_id", jobId == null ? "" : jobId);
+
+                HttpResult result = postJson(endpoint, token, request, 15000, 20000);
+                if (result.code < 200 || result.code >= 300) {
+                    callback.onError("État du pont refusé (HTTP " + result.code + ") : "
+                            + abbreviate(result.body, 1000));
+                    return;
+                }
+
+                JSONObject root = new JSONObject(result.body);
+                if (!root.optBoolean("ok", false)) {
+                    callback.onError(root.optString("error", "État du pont indisponible"));
+                    return;
+                }
+
+                JSONObject job = root.optJSONObject("job");
+                String status = job == null ? "" : job.optString("status", "");
+                callback.onStatus(
+                        root.optBoolean("chatgpt_connected", false),
+                        root.optLong("chatgpt_last_seen_ms", 0L),
+                        status,
+                        root.optString("server_time", "")
+                );
+            } catch (Exception e) {
+                callback.onError("Erreur état du pont : " + safeMessage(e));
             }
         });
     }
