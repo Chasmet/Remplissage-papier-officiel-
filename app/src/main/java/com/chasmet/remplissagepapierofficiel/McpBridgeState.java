@@ -3,6 +3,7 @@ package com.chasmet.remplissagepapierofficiel;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
@@ -81,15 +82,20 @@ public final class McpBridgeState {
         if (activeJob == null || activeJob.isEmpty()) {
             return "ChatGPT : aucun document synchronisé";
         }
+        String age = formatAge(s.lastContact);
+        boolean fresh = s.lastContact > 0L
+                && System.currentTimeMillis() - s.lastContact <= 30_000L;
+
         if (!s.running) {
             return "ChatGPT : pont arrêté • appuyez sur SYNCHRO";
         }
-
-        String age = formatAge(s.lastContact);
-        if (s.connected) {
-            return "ChatGPT : connecté • " + age;
+        if (s.connected && fresh) {
+            return "ChatGPT : CONNECTÉ • " + age;
         }
-        return "ChatGPT : erreur • " + age;
+        if (s.connected) {
+            return "ChatGPT : contact ancien • " + age;
+        }
+        return "ChatGPT : ERREUR • " + age;
     }
 
     public static String diagnostic(Context context) {
@@ -98,9 +104,20 @@ public final class McpBridgeState {
         StringBuilder out = new StringBuilder();
         out.append("Version APK : ").append(BuildConfig.VERSION_NAME)
                 .append(" (").append(BuildConfig.VERSION_CODE).append(")\n");
+        boolean fresh = s.lastContact > 0L
+                && System.currentTimeMillis() - s.lastContact <= 30_000L;
+        SharedPreferences settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
+        String endpoint = settings.getString("mcpUrl", "");
+        File source = McpBridgeStore.getSourceFile(context, job);
+
         out.append("Pont service : ").append(s.running ? "ACTIF" : "ARRÊTÉ").append("\n");
-        out.append("Connexion MCP : ").append(s.connected ? "OK" : "NON CONFIRMÉE").append("\n");
+        out.append("Connexion MCP : ")
+                .append(s.connected && fresh ? "OK / RÉCENTE" : "NON CONFIRMÉE OU ANCIENNE")
+                .append("\n");
+        out.append("URL MCP : ").append(endpoint == null || endpoint.isEmpty() ? "non configurée" : endpoint).append("\n");
         out.append("Document actif : ").append(job == null || job.isEmpty() ? "aucun" : job).append("\n");
+        out.append("Nom document : ").append(McpBridgeStore.getDocumentName(context)).append("\n");
+        out.append("Copie PDF interne : ").append(source != null && source.isFile() ? "OK" : "ABSENTE").append("\n");
         out.append("Dernier contact : ").append(formatDate(s.lastContact)).append("\n");
         out.append("Dernier événement : ").append(empty(s.lastEvent)).append("\n");
         out.append("Dernière commande : ").append(empty(s.lastCommand)).append("\n");
