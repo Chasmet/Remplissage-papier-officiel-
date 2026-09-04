@@ -114,6 +114,19 @@ public class EditorActivity extends Activity {
             if (jobId == null || !jobId.equals(mcpJobId)) return;
 
             refreshMcpStatusUi();
+
+            String activeBridgeJob = McpBridgeStore.getActiveJobId(EditorActivity.this);
+            if (activeBridgeJob == null || activeBridgeJob.isEmpty()) {
+                AppLog.write(EditorActivity.this,
+                        "MCP_BRIDGE ancien job supprimé • création d'un nouveau lien", null);
+                clearPersistedMcpJob();
+                if (sourceUri != null && getPageCountSafe() > 0) {
+                    tvPosition.setText("Ancien lien ChatGPT expiré • resynchronisation automatique…");
+                    autoQueueOrFetchChatGpt();
+                }
+                return;
+            }
+
             List<TextOverlay> updated = McpBridgeStore.loadOverlays(
                     EditorActivity.this, jobId);
             overlays.clear();
