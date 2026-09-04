@@ -974,17 +974,9 @@ public class EditorActivity extends Activity {
         }
 
         SharedPreferences prefs = getSharedPreferences(DRAFT_PREFS, MODE_PRIVATE);
-        String savedVersion = prefs.getString(draftKey + MCP_JOB_VERSION_SUFFIX, "");
-        if (!BuildConfig.VERSION_NAME.equals(savedVersion)) {
-            prefs.edit()
-                    .remove(draftKey + MCP_JOB_SUFFIX)
-                    .remove(draftKey + MCP_JOB_VERSION_SUFFIX)
-                    .remove(draftKey + MCP_COMMAND_SUFFIX)
-                    .apply();
-            mcpJobId = "";
-            return;
-        }
-
+        // Preserve a still-valid pending/ready command across an in-place app update.
+        // The server validates expiry/session ownership; a stale/cancelled job is replaced
+        // automatically after the first synchronization attempt.
         mcpJobId = prefs.getString(draftKey + MCP_JOB_SUFFIX, "");
         if (mcpJobId == null) mcpJobId = "";
     }
