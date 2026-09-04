@@ -216,10 +216,10 @@ public class McpBridgeService extends Service {
                                         sourceFile, finalOverlays);
                                 McpBridgeState.contactOk(
                                         McpBridgeService.this,
-                                        "Prévisualisation et PDF final envoyés à ChatGPT");
+                                        "Prévisualisation envoyée • PDF final en cours");
                                 AppLog.write(McpBridgeService.this,
-                                        "MCP_BRIDGE preview + PDF final envoyés", null);
-                                updateNotification("ChatGPT • document synchronisé");
+                                        "MCP_BRIDGE prévisualisation envoyée • PDF final lancé", null);
+                                updateNotification("ChatGPT • contrôle visuel envoyé");
                                 sendStateBroadcast(jobId);
                             } catch (Exception e) {
                                 AppLog.write(McpBridgeService.this,
@@ -433,10 +433,22 @@ public class McpBridgeService extends Service {
         try {
             McpClient.uploadFilledPdf(endpoint, token, jobId, target,
                     (success, message) -> {
-                        if (!success) {
+                        if (success) {
+                            McpBridgeState.contactOk(
+                                    McpBridgeService.this,
+                                    "PDF final envoyé à ChatGPT");
                             AppLog.write(McpBridgeService.this,
-                                    "McpBridgeService.final: " + message, null);
+                                    "MCP_BRIDGE PDF final envoyé", null);
+                            updateNotification("ChatGPT • PDF final disponible");
+                        } else {
+                            McpBridgeState.contactError(
+                                    McpBridgeService.this,
+                                    "PDF final : " + message);
+                            AppLog.write(McpBridgeService.this,
+                                    "MCP_BRIDGE PDF final erreur : " + message, null);
+                            updateNotification("ChatGPT • erreur PDF final");
                         }
+                        sendStateBroadcast(jobId);
                     });
         } finally {
             // McpClient lit le fichier de manière asynchrone: nettoyage différé.
