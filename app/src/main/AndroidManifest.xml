@@ -20,8 +20,10 @@
         <service
             android:name=".McpBridgeService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
 
+        <activity android:name=".DiagnosticsActivity" android:exported="false" />
         <activity android:name=".SettingsActivity" android:exported="false" />
         <activity android:name=".ProfileActivity" android:exported="false" />
         <activity android:name=".EditorActivity" android:exported="false" />
