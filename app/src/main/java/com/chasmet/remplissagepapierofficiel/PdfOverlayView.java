@@ -30,6 +30,8 @@ public class PdfOverlayView extends View {
     }
 
     private Bitmap bitmap;
+    private int pageUnitWidth = 1;
+    private int pageUnitHeight = 1;
     private final List<TextOverlay> overlays = new ArrayList<>();
     private final List<FormField> detectedFields = new ArrayList<>();
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
@@ -123,10 +125,19 @@ public class PdfOverlayView extends View {
     }
 
     public void setPage(Bitmap bitmap, List<TextOverlay> pageOverlays) {
+        int width = bitmap == null ? 1 : Math.max(1, bitmap.getWidth());
+        int height = bitmap == null ? 1 : Math.max(1, bitmap.getHeight());
+        setPage(bitmap, width, height, pageOverlays);
+    }
+
+    public void setPage(Bitmap bitmap, int pageWidth, int pageHeight,
+                        List<TextOverlay> pageOverlays) {
         if (this.bitmap != null && this.bitmap != bitmap && !this.bitmap.isRecycled()) {
             this.bitmap.recycle();
         }
         this.bitmap = bitmap;
+        this.pageUnitWidth = Math.max(1, pageWidth);
+        this.pageUnitHeight = Math.max(1, pageHeight);
         overlays.clear();
         if (pageOverlays != null) overlays.addAll(pageOverlays);
         detectedFields.clear();
@@ -240,8 +251,8 @@ public class PdfOverlayView extends View {
 
         if (bitmap == null || bitmap.isRecycled()) return;
         float pageScale = Math.min(
-                drawW / Math.max(1f, bitmap.getWidth()),
-                drawH / Math.max(1f, bitmap.getHeight())
+                drawW / Math.max(1f, pageUnitWidth),
+                drawH / Math.max(1f, pageUnitHeight)
         );
 
         for (TextOverlay overlay : overlays) {
