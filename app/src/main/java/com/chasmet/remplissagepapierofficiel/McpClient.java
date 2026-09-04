@@ -71,11 +71,59 @@ public final class McpClient {
                 HttpResult result = postJson(endpoint, token, request, 15000, 15000);
                 if (result.code >= 200 && result.code < 300) {
                     JSONObject json = new JSONObject(result.body);
-                    if (json.has("result")) {
-                        callback.onResult(true, "Connexion MCP réussie (HTTP " + result.code + ")");
-                    } else {
+                    JSONObject initialization = json.optJSONObject("result");
+                    if (initialization == null) {
                         callback.onResult(false, "Réponse MCP invalide");
+                        return;
                     }
+
+                    JSONObject listRequest = new JSONObject();
+                    listRequest.put("jsonrpc", "2.0");
+                    listRequest.put("id", 2);
+                    listRequest.put("method", "tools/list");
+                    listRequest.put("params", new JSONObject());
+
+                    HttpResult listResult = postJson(
+                            endpoint, token, listRequest, 15000, 20000);
+                    if (listResult.code < 200 || listResult.code >= 300) {
+                        callback.onResult(false,
+                                "Serveur joignable, mais liste d’outils indisponible (HTTP "
+                                        + listResult.code + ")");
+                        return;
+                    }
+
+                    JSONObject listJson = new JSONObject(listResult.body);
+                    JSONObject listPayload = listJson.optJSONObject("result");
+                    JSONArray tools = listPayload == null
+                            ? null : listPayload.optJSONArray("tools");
+                    if (tools == null) {
+                        callback.onResult(false, "Serveur joignable, mais tools/list est invalide");
+                        return;
+                    }
+
+                    boolean hasPageImage = false;
+                    boolean hasPreview = false;
+                    boolean hasOverlayUpdate = false;
+                    boolean hasValidation = false;
+                    for (int i = 0; i < tools.length(); i++) {
+                        JSONObject tool = tools.optJSONObject(i);
+                        String name = tool == null ? "" : tool.optString("name", "");
+                        if ("paper_get_page_image".equals(name)) hasPageImage = true;
+                        if ("paper_get_preview_image".equals(name)) hasPreview = true;
+                        if ("paper_update_overlay".equals(name)) hasOverlayUpdate = true;
+                        if ("paper_validate_layout".equals(name)) hasValidation = true;
+                    }
+
+                    JSONObject serverInfo = initialization.optJSONObject("serverInfo");
+                    String serverVersion = serverInfo == null
+                            ? "?" : serverInfo.optString("version", "?");
+                    boolean correctionReady = hasPageImage && hasPreview
+                            && hasOverlayUpdate && hasValidation;
+                    callback.onResult(correctionReady,
+                            "MCP v" + serverVersion + " • " + tools.length() + " outils • "
+                                    + (correctionReady
+                                    ? "correction visuelle complète disponible"
+                                    : "outils de correction incomplets"));
                 } else {
                     callback.onResult(false, "MCP a répondu HTTP " + result.code
                             + (result.body.isEmpty() ? "" : " : " + abbreviate(result.body, 1000)));

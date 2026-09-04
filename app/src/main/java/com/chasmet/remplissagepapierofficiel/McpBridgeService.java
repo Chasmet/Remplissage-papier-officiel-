@@ -335,6 +335,7 @@ public class McpBridgeService extends Service {
         for (TextOverlay overlay : overlays) {
             if (overlay == null || overlay.text == null || overlay.text.isEmpty()) continue;
             JSONObject item = new JSONObject();
+            item.put("overlay_id", overlay.overlayId);
             item.put("page_index", overlay.pageIndex);
             item.put("x", overlay.x);
             item.put("y", overlay.y);
@@ -342,6 +343,7 @@ public class McpBridgeService extends Service {
             item.put("size", overlay.textSize);
             item.put("align", overlay.align);
             item.put("kind", overlay.kind);
+            item.put("data_state", overlay.dataState);
             if (overlay.width > 0f) item.put("width", overlay.width);
             if (overlay.height > 0f) item.put("height", overlay.height);
             array.put(item);

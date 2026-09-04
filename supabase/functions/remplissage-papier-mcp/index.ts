@@ -8,7 +8,7 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
 
 const FUNCTION_SLUG = "remplissage-papier-mcp";
 const PROTOCOL_VERSION = "2025-06-18";
-const SERVER_VERSION = "5.0.0";
+const SERVER_VERSION = "5.1.0";
 const PDF_BUCKET = "remplissage-mcp-pdfs";
 const PAGE_BUCKET = "remplissage-mcp-pages";
 const MAX_PAGE_IMAGE_BYTES = 1_500_000;
@@ -356,6 +356,17 @@ async function signedPdfUrl(path: string, seconds = 900) {
   return data.signedUrl;
 }
 
+async function filledDocumentMeta(job: any) {
+  if (!job?.filled_pdf_path) return { filled_pdf_available: false };
+  return {
+    filled_pdf_available: true,
+    filename: "rempli-" + String(job.document?.name ?? "document.pdf"),
+    download_url: await signedPdfUrl(String(job.filled_pdf_path), 900),
+    download_url_expires_in_seconds: 900,
+    uploaded_at: job.filled_pdf_uploaded_at ?? null,
+  };
+}
+
 async function getJobOwned(sessionId: string, jobId: string) {
   const { data, error } = await supabase.from("remplissage_mcp_jobs")
     .select("*").eq("id", jobId).eq("session_id", sessionId).maybeSingle();
@@ -568,7 +579,7 @@ const tools = [
   },
   {
     name: "paper_get_document_context",
-    description: "Retourne contexte, profil, hints et géométrie. Les hints n'ont aucune autorité sur les coordonnées choisies par ChatGPT.",
+    description: "Retourne le contexte et la vraie page courante en image. Les hints n'ont aucune autorité sur les coordonnées choisies par ChatGPT.",
     inputSchema: { type: "object", properties: { job_id: { type: "string" } }, required: ["job_id"], additionalProperties: false },
     annotations: { title: "Contexte du document", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
@@ -689,7 +700,7 @@ const tools = [
   },
   {
     name: "paper_get_job_status",
-    description: "Vérifie l'état et renvoie la preview si elle est disponible.",
+    description: "Vérifie l'état et renvoie la preview ainsi que le lien du PDF final lorsqu'ils sont disponibles.",
     inputSchema: { type: "object", properties: { job_id: { type: "string" } }, required: ["job_id"], additionalProperties: false },
     annotations: { title: "État du document", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
@@ -734,7 +745,13 @@ async function handleToolCall(sessionId: string, name: string, args: Record<stri
       .gte("app_last_seen_at", activeCutoffIso())
       .order("updated_at", { ascending: false }).limit(limit);
     if (error) throw error;
-    return { jobs: data ?? [], active_document_available: (data ?? []).length > 0 };
+    return {
+      jobs: data ?? [],
+      active_document_available: (data ?? []).length > 0,
+      next_action: (data ?? []).length > 0
+        ? "Appelez paper_get_document_context sur le job_id avant tout placement afin de recevoir la vraie page en image."
+        : "Ouvrez un PDF dans l'application Android.",
+    };
   }
 
   if (name === "paper_list_documents") {
@@ -822,7 +839,7 @@ async function handleToolCall(sessionId: string, name: string, args: Record<stri
     if (name === "paper_get_detected_fields") {
       return { job_id: job.id, detected_fields_are_hints_only: true, fields: job.field_hints ?? [] };
     }
-    return {
+    const context = {
       job_id: job.id,
       status: job.status,
       coordinate_system: {
@@ -836,6 +853,24 @@ async function handleToolCall(sessionId: string, name: string, args: Record<stri
       profile: job.profile ?? {},
       field_hints: job.field_hints ?? [],
       overlay_registry: registryFromDocument(document),
+    };
+    const pageCount = Number(document.page_count ?? document.pageCount ?? 0);
+    const requestedPage = Math.max(0, Math.min(
+      Math.max(0, pageCount - 1),
+      Number(document.current_page_index ?? 0),
+    ));
+    if (document.page_images_ready === true && pageCount > 0) {
+      return await pageImageToolResult(sessionId, job.id, requestedPage, document,
+        `Voici la vraie page ${requestedPage + 1} du PDF. Placez les éléments uniquement après cette inspection visuelle. Après chaque remplissage, contrôlez la preview et corrigez jusqu'à alignement parfait.`,
+        {
+          ...context,
+          legacy_connector_compatible: true,
+          next_action: "Appelez paper_submit_fill_plan avec des coordonnées calculées sur cette image.",
+        });
+    }
+    return {
+      ...context,
+      next_action: "Attendez la fin de la synchronisation des images de pages, puis relancez cet outil.",
     };
   }
 
@@ -874,13 +909,27 @@ async function handleToolCall(sessionId: string, name: string, args: Record<stri
     const jobId = String(args.job_id ?? "").trim();
     const job = await getJobOwned(sessionId, jobId);
     const document = safeObject(job.document);
-    const registry = validatePlacements(args.placements);
+    const rawPlacements = Array.isArray(args.placements) ? args.placements : [];
+    const previousRegistry = registryFromDocument(document);
+    const registry = validatePlacements(rawPlacements).map((placement, index) => {
+      const raw = safeObject(rawPlacements[index]);
+      const explicitId = String(raw.overlay_id ?? raw.id ?? raw.field_id ?? "").trim();
+      const previous = previousRegistry[index];
+      if (!explicitId && previous?.overlay_id) {
+        return { ...placement, overlay_id: previous.overlay_id };
+      }
+      return placement;
+    });
     const missing = missingVisualInspectionPages(document, registry);
     if (missing.length) {
       if (document.page_images_ready !== true) throw new Error("Les pages visuelles ne sont pas encore prêtes");
       return await pageImageToolResult(sessionId, jobId, missing[0], document,
-        `Inspection visuelle obligatoire avant remplissage. Vérifiez la page ${missing[0] + 1} puis renvoyez le même plan.`,
-        { inspection_required: true, remaining_pages: missing.slice(1).map((p) => p + 1) });
+        `Aucun changement n'a été appliqué. Inspectez réellement la page ${missing[0] + 1}, corrigez vos coordonnées à partir de cette image, puis renvoyez le plan complet avec paper_submit_fill_plan.`,
+        {
+          inspection_required: true,
+          plan_applied: false,
+          remaining_pages: missing.slice(1).map((p) => p + 1),
+        });
     }
     const { submittedAt } = await submitRegistryCommand(sessionId, job, registry,
       String(args.notes ?? "Plan visuel initial"), registry.map((p) => String(p.overlay_id)));
@@ -890,8 +939,14 @@ async function handleToolCall(sessionId: string, name: string, args: Record<stri
       const state = await waitForPreview(sessionId, jobId, page, submittedAt);
       if (state) {
         return await previewImageToolResult(sessionId, jobId, page,
-          `Android a appliqué le plan. Voici la vraie preview. Corrigez localement avec paper_update_overlay sans renvoyer tout le document.`,
-          { applied: true, overlay_registry: registry, changed_overlay_ids: registry.map((p) => p.overlay_id) });
+          `Android a appliqué le plan. Inspectez cette vraie preview. Si paper_update_overlay est visible, corrigez localement; sinon renvoyez le plan complet corrigé avec paper_submit_fill_plan. Ne terminez pas tant que l'alignement n'est pas propre.`,
+          {
+            applied: true,
+            review_required: true,
+            legacy_correction_tool: "paper_submit_fill_plan",
+            overlay_registry: registry,
+            changed_overlay_ids: registry.map((p) => p.overlay_id),
+          });
       }
     }
     return { ok: true, job_id: jobId, status: "ready", overlay_registry: registry, preview_pending: true };
@@ -1021,26 +1076,34 @@ async function handleToolCall(sessionId: string, name: string, args: Record<stri
   if (name === "paper_get_job_status") {
     const job = await getJobOwned(sessionId, String(args.job_id ?? ""));
     const pages = Array.isArray(job.preview_pages) ? job.preview_pages.map(Number) : [];
+    const filledDocument = await filledDocumentMeta(job);
     if (pages.length) {
       return await previewImageToolResult(sessionId, job.id, pages[0],
-        `Prévisualisation réelle disponible pour la page ${pages[0] + 1}.`,
-        { status: job.status, preview_pages: pages, preview_updated_at: job.preview_updated_at });
+        `Prévisualisation réelle disponible pour la page ${pages[0] + 1}. Vérifiez-la visuellement. Si les outils fins ne sont pas visibles, renvoyez tous les placements corrigés avec paper_submit_fill_plan.`,
+        {
+          status: job.status,
+          review_required: true,
+          legacy_correction_tool: "paper_submit_fill_plan",
+          preview_pages: pages,
+          preview_updated_at: job.preview_updated_at,
+          overlay_registry: registryFromDocument(safeObject(job.document)),
+          filled_document: filledDocument,
+        });
     }
-    return { job_id: job.id, status: job.status, error_message: job.error_message, preview_pages: pages, updated_at: job.updated_at };
+    return {
+      job_id: job.id,
+      status: job.status,
+      error_message: job.error_message,
+      preview_pages: pages,
+      filled_document: filledDocument,
+      updated_at: job.updated_at,
+    };
   }
 
   if (name === "paper_get_filled_document") {
     const job = await getJobOwned(sessionId, String(args.job_id ?? ""));
-    if (!job.filled_pdf_path) return { ok: false, job_id: job.id, filled_pdf_available: false, status: job.status };
-    return {
-      ok: true,
-      job_id: job.id,
-      filled_pdf_available: true,
-      filename: "rempli-" + String(job.document?.name ?? "document.pdf"),
-      download_url: await signedPdfUrl(String(job.filled_pdf_path), 900),
-      expires_in_seconds: 900,
-      uploaded_at: job.filled_pdf_uploaded_at,
-    };
+    const result = await filledDocumentMeta(job);
+    return { ok: result.filled_pdf_available, job_id: job.id, status: job.status, ...result };
   }
 
   if (name === "paper_delete_document") {
@@ -1273,7 +1336,7 @@ async function handleMcp(req: Request, body: Record<string, any>) {
       protocolVersion: PROTOCOL_VERSION,
       capabilities: { tools: { listChanged: true } },
       serverInfo: { name: "Remplissage Papier MCP", version: SERVER_VERSION },
-      instructions: "Flux recommandé: paper_open_active_document → inspection visuelle → paper_submit_fill_plan → preview → paper_update_overlay répété jusqu'à validation → paper_get_filled_document. Les coordonnées ChatGPT sont autoritaires, sans snap. y texte = baseline; checkbox = centre.",
+      instructions: "Flux recommandé: paper_open_active_document → inspection visuelle → paper_submit_fill_plan → preview → paper_update_overlay répété jusqu'à validation → paper_get_filled_document. Connecteur ancien: paper_get_document_context renvoie aussi l'image réelle et paper_submit_fill_plan permet de remplacer le plan complet après chaque preview. Les coordonnées ChatGPT sont autoritaires, sans snap. y texte = baseline; checkbox = centre.",
     }, session.id);
   }
   if (method === "ping") return rpcResult(id, {}, session.id);
@@ -1407,7 +1470,7 @@ Deno.serve(async (req: Request) => {
     if (req.method === "GET") {
       const session = await getSession(req);
       return jsonResponse({ ok: true, service: "Remplissage Papier MCP", version: SERVER_VERSION,
-        protocol: PROTOCOL_VERSION, session_valid: Boolean(session), endpoint: url.origin + url.pathname });
+        protocol: PROTOCOL_VERSION, tool_count: tools.length, session_valid: Boolean(session), endpoint: url.origin + url.pathname });
     }
     if (req.method !== "POST") return jsonResponse({ ok: false, error: "Méthode HTTP non supportée" }, 405);
     const body = safeObject(await req.json());

@@ -319,6 +319,7 @@ public class EditorActivity extends Activity {
         btnExportPdf.setOnClickListener(v -> requestPdfExport());
         btnExportPng.setOnClickListener(v -> requestPngExport());
         findViewById(R.id.btnMcpSync).setOnClickListener(v -> manualMcpSync());
+        findViewById(R.id.btnOpenChatGpt).setOnClickListener(v -> openChatGptAssistant());
         findViewById(R.id.btnMcpLogs).setOnClickListener(v ->
                 startActivity(new Intent(this, DiagnosticsActivity.class)));
 
@@ -622,11 +623,15 @@ public class EditorActivity extends Activity {
     }
 
     private void updateFieldStatus(int count) {
-        if (count <= 0) {
-            tvFieldStatus.setText("0 champ");
-        } else {
-            tvFieldStatus.setText(count + (count > 1 ? " champs" : " champ"));
+        int additions = currentPageOverlays().size();
+        StringBuilder status = new StringBuilder();
+        if (count <= 0) status.append("Visuel direct");
+        else status.append(count).append(count > 1 ? " repères" : " repère");
+        if (additions > 0) {
+            status.append(" • ").append(additions)
+                    .append(additions > 1 ? " ajouts" : " ajout");
         }
+        tvFieldStatus.setText(status.toString());
     }
 
     private List<TextOverlay> currentPageOverlays() {
@@ -870,6 +875,58 @@ public class EditorActivity extends Activity {
         stopService(new Intent(this, McpBridgeService.class));
         McpBridgeState.setRunning(this, false);
         mcpHandler.postDelayed(this::startPersistentMcpBridgeService, 250L);
+    }
+
+    private void openChatGptAssistant() {
+        if (sourceUri == null || getPageCountSafe() <= 0) {
+            Toast.makeText(this, "Choisissez d’abord un PDF", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        SharedPreferences settings = getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE);
+        String endpoint = settings.getString("mcpUrl", "").trim();
+        if (endpoint.isEmpty()) {
+            tvChatGptStatus.setText("ChatGPT : MCP non configuré");
+            Toast.makeText(this, "Configurez le MCP dans Réglages", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        if (mcpJobId == null || mcpJobId.isEmpty()) {
+            tvPosition.setText("Préparation du PDF pour ChatGPT…");
+            autoQueueOrFetchChatGpt();
+            Toast.makeText(this,
+                    "Le PDF se synchronise. Ouvrez ChatGPT dès que le pont indique PRÊT.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        ensurePersistentMcpBridge();
+        startPersistentMcpBridgeService();
+
+        String prompt = "@Remplissage auto documents ouvre le document actif. "
+                + "Regarde la vraie image de chaque page, remplis le document, "
+                + "contrôle la prévisualisation réelle et corrige jusqu’à ce que tout soit "
+                + "parfaitement aligné avant de me rendre le PDF final.";
+
+        Intent direct = new Intent(Intent.ACTION_SEND);
+        direct.setType("text/plain");
+        direct.putExtra(Intent.EXTRA_TEXT, prompt);
+        direct.setPackage("com.openai.chatgpt");
+        try {
+            startActivity(direct);
+            tvPosition.setText("ChatGPT ouvert • le pont reste actif sur ce PDF.");
+            return;
+        } catch (Exception error) {
+            AppLog.write(this, "openChatGpt.direct", error);
+        }
+
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://chatgpt.com/")));
+            tvPosition.setText("ChatGPT ouvert dans le navigateur • le pont reste actif.");
+        } catch (Exception error) {
+            AppLog.write(this, "openChatGpt.web", error);
+            Toast.makeText(this, "Impossible d’ouvrir ChatGPT", Toast.LENGTH_LONG).show();
+        }
     }
 
     private void refreshMcpStatusUi() {
@@ -1413,6 +1470,7 @@ public class EditorActivity extends Activity {
         JSONArray items = new JSONArray();
         for (TextOverlay overlay : overlays) {
             JSONObject item = new JSONObject();
+            item.put("overlay_id", overlay.overlayId);
             item.put("page_index", overlay.pageIndex);
             item.put("x", overlay.x);
             item.put("y", overlay.y);
@@ -1420,6 +1478,7 @@ public class EditorActivity extends Activity {
             item.put("size", overlay.textSize);
             item.put("align", overlay.align);
             item.put("kind", overlay.kind);
+            item.put("data_state", overlay.dataState);
             if (overlay.width > 0f) item.put("width", overlay.width);
             if (overlay.height > 0f) item.put("height", overlay.height);
             items.put(item);

@@ -44,25 +44,38 @@
             android:maxLines="2"
             android:paddingStart="8dp"
             android:paddingEnd="6dp"
-            android:text="ChatGPT : aucun document synchronisé"
+            android:text="ChatGPT : aucun PDF synchronisé"
             android:textColor="#FFF1D7"
-            android:textSize="10sp"
+            android:textSize="9sp"
             android:textStyle="bold" />
 
         <Button
-            android:id="@+id/btnMcpSync"
-            android:layout_width="82dp"
+            android:id="@+id/btnOpenChatGpt"
+            android:layout_width="76dp"
             android:layout_height="38dp"
             android:background="@drawable/bg_button_orange"
             android:backgroundTint="@null"
-            android:text="SYNCHRO"
+            android:text="OUVRIR"
             android:textColor="#FFFFFF"
             android:textSize="9sp"
             android:textStyle="bold" />
 
         <Button
+            android:id="@+id/btnMcpSync"
+            android:layout_width="44dp"
+            android:layout_height="38dp"
+            android:layout_marginStart="4dp"
+            android:background="@drawable/bg_button_orange"
+            android:backgroundTint="@null"
+            android:contentDescription="Relancer la synchronisation ChatGPT"
+            android:text="↻"
+            android:textColor="#FFFFFF"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <Button
             android:id="@+id/btnMcpLogs"
-            android:layout_width="62dp"
+            android:layout_width="54dp"
             android:layout_height="38dp"
             android:layout_marginStart="4dp"
             android:background="@drawable/bg_button_dark"
@@ -129,7 +142,7 @@
             android:layout_height="38dp"
             android:background="@drawable/bg_button_orange"
             android:backgroundTint="@null"
-            android:text="CHAMPS AUTO"
+            android:text="REPÈRES"
             android:textColor="#FFFFFF"
             android:textSize="9sp"
             android:textStyle="bold" />
@@ -151,7 +164,7 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:gravity="center"
-            android:text="0 champ"
+            android:text="Visuel direct"
             android:textColor="#FF9A5C"
             android:textSize="11sp"
             android:textStyle="bold" />

@@ -1,0 +1,9 @@
+.gradle/
+.gradle-bootstrap/
+.render-tools/
+local.properties
+**/build/
+render-update/public/
+*.jks
+*.keystore
+*.p12
