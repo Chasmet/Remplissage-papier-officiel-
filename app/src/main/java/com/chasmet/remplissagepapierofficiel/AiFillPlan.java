@@ -29,7 +29,12 @@ public final class AiFillPlan {
             JSONObject item = items.optJSONObject(i);
             if (item == null) continue;
 
+            String kind = item.optString("kind", item.optString("type", "text")).trim().toLowerCase(java.util.Locale.ROOT);
+            boolean checked = item.optBoolean("checked", false);
             String text = item.optString("text", "").trim();
+            if (text.isEmpty() && ("checkbox".equals(kind) || "check".equals(kind)) && checked) {
+                text = "X";
+            }
             if (text.isEmpty()) continue;
 
             int pageIndex;
@@ -66,12 +71,15 @@ public final class AiFillPlan {
         root.put("detectedFieldsAreHintsOnly", true);
         root.put("freePlacementAllowed", true);
         root.put("supportsAnyPage", true);
+        root.put("supportsCheckboxes", true);
 
         JSONObject placement = new JSONObject();
         placement.put("page", "1-based page number");
         placement.put("x", "0.0 to 1.0 from left edge");
         placement.put("y", "0.0 to 1.0 from top edge; text baseline");
-        placement.put("text", "text to write");
+        placement.put("text", "text to write; use X inside a selected checkbox");
+        placement.put("kind", "text or checkbox");
+        placement.put("checked", "true for a selected checkbox");
         placement.put("size", "text size in points, 8 to 40");
         root.put("placementSchema", placement);
         return root;
