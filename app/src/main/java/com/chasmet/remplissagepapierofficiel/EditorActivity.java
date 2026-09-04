@@ -1838,9 +1838,9 @@ public class EditorActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        if (isFinishing() && mcpJobId != null && !mcpJobId.isEmpty()) {
-            deactivateCurrentMcpDocument();
-        }
+        // Le document MCP reste disponible même si l'utilisateur quitte l'éditeur
+        // pour revenir dans ChatGPT. Il n'est désactivé que lorsqu'un autre PDF
+        // remplace explicitement le document courant.
         destroyed = true;
         renderGeneration.incrementAndGet();
         if (draftKey != null) saveDraft(true);
