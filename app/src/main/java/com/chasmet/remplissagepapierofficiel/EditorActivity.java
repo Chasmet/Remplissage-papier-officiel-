@@ -734,7 +734,7 @@ public class EditorActivity extends Activity {
             try {
                 RenderedPage rendered = renderPage(i, false);
                 renderedBitmap = rendered.bitmap;
-                uploadBitmap = scaleForMcpVision(renderedBitmap, 1200);
+                uploadBitmap = scaleForMcpVision(renderedBitmap, 1600);
 
                 byte[] jpeg = encodeMcpJpeg(uploadBitmap);
                 McpClient.uploadPageImageBlocking(
@@ -779,7 +779,7 @@ public class EditorActivity extends Activity {
             throw new IOException("Page visuelle indisponible");
         }
 
-        int[] qualities = new int[]{78, 68, 58, 48};
+        int[] qualities = new int[]{82, 72, 62, 52, 44};
         for (int quality : qualities) {
             ByteArrayOutputStream output = new ByteArrayOutputStream();
             if (!bitmap.compress(Bitmap.CompressFormat.JPEG, quality, output)) {
