@@ -9,6 +9,7 @@ import android.os.Bundle;
 import android.widget.Button;
 import android.widget.Toast;
 
+import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 
 import org.json.JSONObject;
@@ -48,6 +49,17 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+
+        String activeJob = McpBridgeStore.getActiveJobId(this);
+        if (activeJob != null && !activeJob.isEmpty()) {
+            try {
+                ContextCompat.startForegroundService(
+                        this, new Intent(this, McpBridgeService.class));
+            } catch (Exception e) {
+                AppLog.write(this, "MainActivity.startMcpBridge", e);
+            }
+        }
+
         checkChatGptInbox();
     }
 
