@@ -124,6 +124,8 @@ public class EditorActivity extends Activity {
         }
     };
 
+    private final Handler mcpHandler = new Handler(Looper.getMainLooper());
+
     private final Runnable mcpStatusUiRunnable = new Runnable() {
         @Override
         public void run() {
@@ -132,8 +134,6 @@ public class EditorActivity extends Activity {
             mcpHandler.postDelayed(this, 1000L);
         }
     };
-
-    private final Handler mcpHandler = new Handler(Looper.getMainLooper());
     private final Runnable mcpPollRunnable = new Runnable() {
         @Override
         public void run() {
