@@ -301,6 +301,9 @@ public class EditorActivity extends Activity {
     private void openPdf(Uri uri, Intent data, int requestedPage) {
         closePdf();
         try {
+            if ((pendingInboundJobId == null || pendingInboundJobId.isEmpty()) && data != null) {
+                currentDocumentNameOverride = "";
+            }
             if (data != null) {
                 int flags = data.getFlags()
                         & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
