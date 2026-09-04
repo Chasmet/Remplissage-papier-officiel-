@@ -396,10 +396,9 @@ public class EditorActivity extends Activity {
             renderCurrentPage();
             if (inboundNeedsContextSync) {
                 syncInboundDocumentContext();
+            } else if (mcpJobId != null && !mcpJobId.isEmpty()) {
+                ensurePersistentMcpBridge();
             } else {
-                if (mcpJobId != null && !mcpJobId.isEmpty()) {
-                    ensurePersistentMcpBridge();
-                }
                 autoQueueOrFetchChatGpt();
             }
         } catch (Exception e) {
@@ -677,7 +676,7 @@ public class EditorActivity extends Activity {
                                         ? "PDF reçu • pages visibles par ChatGPT."
                                         : "PDF reçu • " + uploadedPages + "/" + pageCount
                                         + " page(s) visuelle(s) synchronisée(s).");
-                                fetchChatGptResult(endpoint, token, false);
+                                startPersistentMcpBridgeService();
                             } else {
                                 tvPosition.setText(message);
                             }
@@ -1874,11 +1873,9 @@ public class EditorActivity extends Activity {
             startPersistentMcpBridgeService();
             List<TextOverlay> bridgeOverlays =
                     McpBridgeStore.loadOverlays(this, mcpJobId);
-            if (!bridgeOverlays.isEmpty() || overlays.isEmpty()) {
-                overlays.clear();
-                overlays.addAll(bridgeOverlays);
-                renderCurrentPage();
-            }
+            overlays.clear();
+            overlays.addAll(bridgeOverlays);
+            renderCurrentPage();
         }
 
         mcpHandler.removeCallbacks(mcpPollRunnable);
