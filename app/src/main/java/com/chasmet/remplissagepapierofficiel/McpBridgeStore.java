@@ -8,10 +8,11 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.ByteArrayOutputStream;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -56,10 +57,32 @@ public final class McpBridgeStore {
     public static synchronized void attachExistingFile(Context context, String jobId, File sourceFile,
                                                        String documentName,
                                                        List<TextOverlay> overlays) throws Exception {
-        if (sourceFile == null || !sourceFile.isFile()) {
+        if (context == null || jobId == null || jobId.trim().isEmpty()
+                || sourceFile == null || !sourceFile.isFile()) {
             throw new IllegalArgumentException("PDF source introuvable");
         }
-        attachJob(context, jobId, Uri.fromFile(sourceFile), documentName, overlays);
+
+        File dir = jobDir(context, jobId);
+        if (!dir.exists() && !dir.mkdirs()) {
+            throw new IllegalStateException("Stockage MCP inaccessible");
+        }
+
+        File target = new File(dir, "source.pdf");
+        try (FileInputStream input = new FileInputStream(sourceFile);
+             FileOutputStream output = new FileOutputStream(target, false)) {
+            copyStream(input, output);
+        }
+
+        saveOverlays(context, jobId, overlays);
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putString(KEY_ACTIVE_JOB, jobId)
+                .putString(KEY_SOURCE_PATH, target.getAbsolutePath())
+                .putString(KEY_DOCUMENT_NAME,
+                        documentName == null || documentName.trim().isEmpty()
+                                ? "document.pdf" : documentName.trim())
+                .remove(KEY_LAST_COMMAND)
+                .apply();
     }
 
     public static String getActiveJobId(Context context) {
@@ -123,7 +146,16 @@ public final class McpBridgeStore {
             File file = new File(jobDir(context, jobId), "overlays.json");
             if (!file.isFile()) return result;
 
-            String json = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+            String json;
+            try (FileInputStream input = new FileInputStream(file);
+                 ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+                byte[] buffer = new byte[4096];
+                int read;
+                while ((read = input.read(buffer)) != -1) {
+                    output.write(buffer, 0, read);
+                }
+                json = new String(output.toByteArray(), StandardCharsets.UTF_8);
+            }
             JSONArray array = new JSONArray(json);
             for (int i = 0; i < array.length(); i++) {
                 JSONObject item = array.optJSONObject(i);
@@ -186,22 +218,26 @@ public final class McpBridgeStore {
         try (InputStream input = context.getContentResolver().openInputStream(uri);
              FileOutputStream output = new FileOutputStream(target, false)) {
             if (input == null) throw new IllegalStateException("PDF source inaccessible");
-            byte[] buffer = new byte[8192];
-            long total = 0L;
-            int read;
-            while ((read = input.read(buffer)) != -1) {
-                total += read;
-                if (total > MAX_PDF_BYTES) {
-                    throw new IllegalArgumentException("PDF trop volumineux");
-                }
-                output.write(buffer, 0, read);
-            }
-            output.flush();
+            copyStream(input, output);
         }
 
         if (target.length() < 5) {
             throw new IllegalArgumentException("PDF source invalide");
         }
+    }
+
+    private static void copyStream(InputStream input, FileOutputStream output) throws Exception {
+        byte[] buffer = new byte[8192];
+        long total = 0L;
+        int read;
+        while ((read = input.read(buffer)) != -1) {
+            total += read;
+            if (total > MAX_PDF_BYTES) {
+                throw new IllegalArgumentException("PDF trop volumineux");
+            }
+            output.write(buffer, 0, read);
+        }
+        output.flush();
     }
 
     private static float clamp01(float value) {
