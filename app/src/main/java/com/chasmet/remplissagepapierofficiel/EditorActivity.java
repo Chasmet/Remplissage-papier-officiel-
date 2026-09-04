@@ -867,10 +867,163 @@ public class EditorActivity extends Activity {
         }
     }
 
+    private List<TextOverlay> smartAlignMcpOverlays(List<TextOverlay> incoming) {
+        List<TextOverlay> aligned = new ArrayList<>();
+        if (incoming == null) return aligned;
+
+        for (TextOverlay overlay : incoming) {
+            aligned.add(smartAlignMcpOverlay(overlay));
+        }
+        return aligned;
+    }
+
+    private TextOverlay smartAlignMcpOverlay(TextOverlay overlay) {
+        if (overlay == null) return null;
+
+        List<FormField> fields;
+        synchronized (detectedFieldsByPage) {
+            List<FormField> cached = detectedFieldsByPage.get(overlay.pageIndex);
+            fields = cached == null ? null : new ArrayList<>(cached);
+        }
+        if (fields == null || fields.isEmpty()) return overlay;
+
+        boolean checkboxMark = "X".equalsIgnoreCase(
+                overlay.text == null ? "" : overlay.text.trim());
+
+        FormField best = null;
+        float bestScore = Float.MAX_VALUE;
+
+        for (FormField field : fields) {
+            if (checkboxMark && field.type != FormField.Type.CHECKBOX) continue;
+            if (!checkboxMark && field.type == FormField.Type.CHECKBOX) continue;
+
+            float anchorX = field.type == FormField.Type.CHECKBOX
+                    ? field.centerX() : field.textX();
+            float anchorY = field.type == FormField.Type.CHECKBOX
+                    ? field.centerY() : field.textBaselineY();
+
+            float dy = Math.abs(overlay.y - anchorY);
+            float expandedLeft = field.x - 0.035f;
+            float expandedRight = field.x + field.width + 0.035f;
+            float horizontalGap;
+            if (overlay.x < expandedLeft) {
+                horizontalGap = expandedLeft - overlay.x;
+            } else if (overlay.x > expandedRight) {
+                horizontalGap = overlay.x - expandedRight;
+            } else {
+                horizontalGap = 0f;
+            }
+
+            if (checkboxMark) {
+                if (dy > 0.070f || horizontalGap > 0.070f) continue;
+            } else {
+                if (dy > 0.055f || horizontalGap > 0.160f) continue;
+            }
+
+            float centerDx = Math.abs(overlay.x - field.centerX());
+            float score = dy * 5.0f + horizontalGap * 2.0f + centerDx * 0.12f;
+            if (field.confidence >= 0.80f) score -= 0.015f;
+
+            if (score < bestScore) {
+                bestScore = score;
+                best = field;
+            }
+        }
+
+        if (best == null) return overlay;
+
+        try {
+            return fitOverlayInsideField(overlay, best);
+        } catch (Exception e) {
+            AppLog.write(this, "smartAlignMcpOverlay", e);
+            return new TextOverlay(
+                    overlay.pageIndex,
+                    best.type == FormField.Type.CHECKBOX ? best.centerX() : best.textX(),
+                    best.type == FormField.Type.CHECKBOX ? best.centerY() : best.textBaselineY(),
+                    overlay.text,
+                    Math.min(overlay.textSize, best.type == FormField.Type.CHECKBOX ? 8f : 9f)
+            );
+        }
+    }
+
+    private TextOverlay fitOverlayInsideField(TextOverlay overlay, FormField field) throws Exception {
+        int[] pageSize = getPdfPageSize(overlay.pageIndex);
+        int pageWidth = Math.max(1, pageSize[0]);
+        int pageHeight = Math.max(1, pageSize[1]);
+
+        Paint measurePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        float rawHeight = field.height * pageHeight;
+
+        float maxByHeight;
+        if (field.type == FormField.Type.CHECKBOX) {
+            maxByHeight = rawHeight * 0.72f;
+        } else if (field.type == FormField.Type.BOX) {
+            maxByHeight = rawHeight * 0.58f;
+        } else {
+            maxByHeight = rawHeight * 0.62f;
+        }
+
+        float textSize = Math.max(5.5f,
+                Math.min(overlay.textSize, Math.min(10f, maxByHeight)));
+        measurePaint.setTextSize(textSize);
+
+        float horizontalPadding = field.type == FormField.Type.CHECKBOX ? 1f : 2.2f;
+        float maxWidth = Math.max(4f, field.width * pageWidth - horizontalPadding * 2f);
+        float measured = measurePaint.measureText(overlay.text == null ? "" : overlay.text);
+        if (measured > maxWidth && measured > 0f) {
+            textSize = Math.max(5f, textSize * (maxWidth / measured));
+            measurePaint.setTextSize(textSize);
+        }
+
+        Paint.FontMetrics fm = measurePaint.getFontMetrics();
+        float xPx;
+        float baselinePx;
+
+        if (field.type == FormField.Type.CHECKBOX) {
+            float textWidth = measurePaint.measureText(overlay.text == null ? "" : overlay.text);
+            xPx = field.centerX() * pageWidth - textWidth * 0.5f;
+            baselinePx = field.centerY() * pageHeight - (fm.ascent + fm.descent) * 0.5f;
+        } else if (field.type == FormField.Type.BOX) {
+            xPx = field.x * pageWidth + horizontalPadding;
+            baselinePx = field.centerY() * pageHeight - (fm.ascent + fm.descent) * 0.5f;
+        } else {
+            xPx = field.x * pageWidth + horizontalPadding;
+            baselinePx = (field.y + field.height) * pageHeight
+                    - Math.max(1.2f, textSize * 0.16f);
+        }
+
+        float nx = clamp01(xPx / pageWidth);
+        float ny = clamp01(baselinePx / pageHeight);
+
+        return new TextOverlay(
+                overlay.pageIndex,
+                nx,
+                ny,
+                overlay.text,
+                textSize
+        );
+    }
+
+    private int[] getPdfPageSize(int index) throws Exception {
+        synchronized (rendererLock) {
+            if (renderer == null) throw new IOException("PDF fermé");
+            if (index < 0 || index >= renderer.getPageCount()) {
+                throw new IOException("Page invalide");
+            }
+            PdfRenderer.Page page = renderer.openPage(index);
+            try {
+                return new int[]{page.getWidth(), page.getHeight()};
+            } finally {
+                page.close();
+            }
+        }
+    }
+
     private int applyMcpPlan(JSONObject fillPlan) throws Exception {
         String mode = fillPlan.optString("mode", "append").trim().toLowerCase(Locale.ROOT);
         int targetPage = fillPlan.optInt("target_page", -1);
-        List<TextOverlay> incoming = AiFillPlan.parse(fillPlan.toString(), getPageCountSafe());
+        List<TextOverlay> incoming = smartAlignMcpOverlays(
+                AiFillPlan.parse(fillPlan.toString(), getPageCountSafe()));
 
         int changed = 0;
         if ("replace_document".equals(mode) || "replace".equals(mode)) {
@@ -1063,8 +1216,11 @@ public class EditorActivity extends Activity {
                 if (page != null) blocks = page.optJSONArray("text_blocks");
             }
 
-            for (FormField field : fields) {
+            for (int fieldIndex = 0; fieldIndex < fields.size(); fieldIndex++) {
+                FormField field = fields.get(fieldIndex);
                 JSONObject hint = new JSONObject();
+                String fieldId = "p" + i + "_f" + fieldIndex;
+                hint.put("field_id", fieldId);
                 hint.put("page_index", i);
                 hint.put("x", field.x);
                 hint.put("y", field.y);
@@ -1072,18 +1228,26 @@ public class EditorActivity extends Activity {
                 hint.put("height", field.height);
                 hint.put("type", field.type.name().toLowerCase(Locale.ROOT));
                 hint.put("confidence", field.confidence);
+                hint.put("anchor_x", field.textX());
+                hint.put("baseline_y", field.textBaselineY());
+                hint.put("snap_required", true);
+                hint.put("recommended_size",
+                        field.type == FormField.Type.CHECKBOX ? 8 : 8);
 
                 JSONArray nearby = findNearbyText(field, blocks);
                 if (nearby.length() > 0) hint.put("nearby_text", nearby);
 
                 if (field.type == FormField.Type.CHECKBOX) {
-                    hint.put("mark_x", clamp01(field.x + field.width * 0.18f));
-                    hint.put("mark_y", clamp01(field.y + field.height * 0.78f));
+                    hint.put("mark_x", field.centerX());
+                    hint.put("mark_y", field.centerY());
                     hint.put("recommended_text", "X");
-                    hint.put("recommended_size", 9);
                     hint.put("semantic_instruction",
-                            "Case à cocher : sélectionner seulement l'option correspondant au libellé voisin. "
+                            "Case à cocher : renvoyer field_id et laisser l'application centrer le X. "
                                     + "Pour un groupe Oui/Non, cocher une seule réponse sauf indication contraire.");
+                } else {
+                    hint.put("semantic_instruction",
+                            "Champ de texte : renvoyer field_id. L'application calcule l'alignement final; "
+                                    + "ne pas utiliser des coordonnées approximatives si ce champ correspond.");
                 }
                 hints.put(hint);
             }
