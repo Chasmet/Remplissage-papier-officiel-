@@ -1,0 +1,2 @@
+package com.chasmet.remplissagepapierofficiel;
+public final class PrecisionServerToolNames { private PrecisionServerToolNames(){} public static final String UPDATE_OVERLAY="paper_update_overlay";public static final String DELETE_OVERLAY="paper_delete_overlay";public static final String MEASURE_TEXT="paper_measure_text";public static final String GET_GEOMETRY="paper_get_document_geometry";public static final String GET_CROP="paper_get_preview_crop";public static final String VALIDATE="paper_validate_layout";public static final String EXPORT="paper_export_final_pdf"; }
