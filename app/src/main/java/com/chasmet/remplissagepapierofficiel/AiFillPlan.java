@@ -101,15 +101,16 @@ public final class AiFillPlan {
 
     public static JSONObject capabilities() throws Exception {
         JSONObject root = new JSONObject();
-        root.put("protocol", "remplissage-papier-officiel.ai-fill.v4");
+        root.put("protocol", "remplissage-papier-officiel.ai-fill.v5");
         root.put("coordinateSystem", "normalized-0-to-1");
-        root.put("coordinatePolicy", "strict-authoritative-no-snap-no-percent-conversion");
+        root.put("coordinatePolicy", "field-id-exact-anchor; free-coordinates-fallback");
         root.put("textYReference", "exact-baseline");
         root.put("checkboxXYReference", "exact-center");
-        root.put("detectedFieldsAreHintsOnly", true);
+        root.put("detectedFieldsAreExactAnchorsWhenSelected", true);
         root.put("fieldIdOptional", true);
-        root.put("applicationSnappingDisabled", true);
-        root.put("coordinatesAreAuthoritative", true);
+        root.put("fieldIdPreferred", true);
+        root.put("fieldIdOverridesCoordinatesOnServer", true);
+        root.put("freeCoordinatesAreAuthoritativeWithoutFieldId", true);
         root.put("freePlacementAllowed", true);
         root.put("supportsAnyPage", true);
         root.put("supportsCheckboxes", true);
@@ -138,6 +139,7 @@ public final class AiFillPlan {
         placement.put("align", "left, center or right");
         placement.put("width", "optional normalized expected field width; no auto-fit");
         placement.put("height", "optional normalized expected field height; no auto-fit");
+        placement.put("field_id", "preferred exact field guide id; overrides x/y and auto-fits to the measured field");
         placement.put("data_state", "known, unknown, requires_user or requires_signature");
         root.put("placementSchema", placement);
         return root;
@@ -160,7 +162,9 @@ public final class AiFillPlan {
             int index = 0;
             for (FormField field : detectedFields) {
                 JSONObject hint = new JSONObject();
-                hint.put("field_hint_id", "p" + pageIndex + "_hint_" + index++);
+                String fieldId = String.format(java.util.Locale.ROOT,
+                        "p%d_f%03d", pageIndex + 1, index++ + 1);
+                hint.put("field_id", fieldId);
                 hint.put("page_index", pageIndex);
                 hint.put("x", field.x);
                 hint.put("y", field.y);
@@ -168,11 +172,16 @@ public final class AiFillPlan {
                 hint.put("height", field.height);
                 hint.put("type", field.type.name().toLowerCase(java.util.Locale.ROOT));
                 hint.put("confidence", field.confidence);
+                hint.put("anchor_x", field.textX());
+                hint.put("baseline_y", field.textBaselineY());
+                hint.put("mark_x", field.centerX());
+                hint.put("mark_y", field.centerY());
+                hint.put("exact_anchor_available", true);
                 hints.put(hint);
             }
         }
         root.put("detectedFieldHints", hints);
-        root.put("note", "Hints are advisory only. ChatGPT x/y/size/align are authoritative and never snapped.");
+        root.put("note", "Choose a field_id by meaning; the MCP server applies its exact Android anchor. Use free x/y only when no field matches.");
         return root;
     }
 

@@ -202,6 +202,16 @@ public class EditorActivity extends Activity {
         }
     }
 
+    private static class McpPageUploadResult {
+        final int pages;
+        final int guides;
+
+        McpPageUploadResult(int pages, int guides) {
+            this.pages = pages;
+            this.guides = guides;
+        }
+    }
+
     private static final class PositionStripper extends PDFTextStripper {
         private final JSONArray blocks = new JSONArray();
         private final int pageIndex;
@@ -533,7 +543,7 @@ public class EditorActivity extends Activity {
                         tvPosition.setText("Placement libre • ChatGPT utilise l’image réelle de la page.");
                     } else {
                         tvPosition.setText(finalFields.size()
-                                + " repère(s) optionnel(s) affiché(s) • aucun recalage automatique.");
+                                + " repère(s) affiché(s) • ancrage exact disponible dans ChatGPT.");
                     }
                 });
             } catch (OutOfMemoryError oom) {
@@ -684,6 +694,7 @@ public class EditorActivity extends Activity {
                 JSONObject document = buildMcpDocumentContext(uriSnapshot, pageCount);
                 JSONObject profile = buildMcpProfile();
                 JSONArray fieldHints = buildMcpFieldHints(pageCount, document);
+                showMcpFieldCount(fieldHints.length());
 
                 McpBridgeStore.attachJob(
                         EditorActivity.this,
@@ -693,9 +704,12 @@ public class EditorActivity extends Activity {
                         new ArrayList<>(overlays));
                 startPersistentMcpBridgeService();
 
-                int uploadedPages = uploadMcpPageImages(endpoint, token, jobId, pageCount);
-                document.put("page_images_count", uploadedPages);
-                document.put("page_images_ready", uploadedPages == pageCount);
+                McpPageUploadResult uploads = uploadMcpPageImages(
+                        endpoint, token, jobId, pageCount);
+                document.put("page_images_count", uploads.pages);
+                document.put("page_images_ready", uploads.pages == pageCount);
+                document.put("field_guides_count", uploads.guides);
+                document.put("field_guides_ready", uploads.guides == pageCount);
 
                 McpClient.updateJobContext(endpoint, token, jobId,
                         document, profile, fieldHints,
@@ -705,9 +719,9 @@ public class EditorActivity extends Activity {
                             if (destroyed || isFinishing() || !jobId.equals(mcpJobId)) return;
 
                             if (success) {
-                                tvPosition.setText(uploadedPages == pageCount
+                                tvPosition.setText(uploads.pages == pageCount
                                         ? "PDF reçu • pages visibles par ChatGPT."
-                                        : "PDF reçu • " + uploadedPages + "/" + pageCount
+                                        : "PDF reçu • " + uploads.pages + "/" + pageCount
                                         + " page(s) visuelle(s) synchronisée(s).");
                                 startPersistentMcpBridgeService();
                             } else {
@@ -743,6 +757,7 @@ public class EditorActivity extends Activity {
                 JSONObject document = buildMcpDocumentContext(uriSnapshot, pageCount);
                 JSONObject profile = buildMcpProfile();
                 JSONArray fieldHints = buildMcpFieldHints(pageCount, document);
+                showMcpFieldCount(fieldHints.length());
 
                 runOnUiThread(() -> tvPosition.setText("Envoi sécurisé vers ChatGPT…"));
 
@@ -767,10 +782,12 @@ public class EditorActivity extends Activity {
                                                 new ArrayList<>(overlays));
                                         startPersistentMcpBridgeService();
 
-                                        int uploadedPages = uploadMcpPageImages(
+                                        McpPageUploadResult uploads = uploadMcpPageImages(
                                                 endpoint, token, jobId, pageCount);
-                                        document.put("page_images_count", uploadedPages);
-                                        document.put("page_images_ready", uploadedPages == pageCount);
+                                        document.put("page_images_count", uploads.pages);
+                                        document.put("page_images_ready", uploads.pages == pageCount);
+                                        document.put("field_guides_count", uploads.guides);
+                                        document.put("field_guides_ready", uploads.guides == pageCount);
 
                                         McpClient.updateJobContext(endpoint, token, jobId,
                                                 document, profile, fieldHints,
@@ -780,9 +797,9 @@ public class EditorActivity extends Activity {
                                                             || !jobId.equals(mcpJobId)) return;
 
                                                     if (success) {
-                                                        tvPosition.setText(uploadedPages == pageCount
+                                                        tvPosition.setText(uploads.pages == pageCount
                                                                 ? "Document prêt • ChatGPT peut voir toutes les pages."
-                                                                : "Document prêt • " + uploadedPages + "/"
+                                                                : "Document prêt • " + uploads.pages + "/"
                                                                 + pageCount + " page(s) visuelle(s) disponibles.");
                                                         Toast.makeText(EditorActivity.this,
                                                                 "Document disponible dans ChatGPT",
@@ -839,6 +856,18 @@ public class EditorActivity extends Activity {
                 startPersistentMcpBridgeService();
             } catch (Exception e) {
                 AppLog.write(EditorActivity.this, "ensurePersistentMcpBridge", e);
+            }
+        });
+    }
+
+    private void showMcpFieldCount(int count) {
+        runOnUiThread(() -> {
+            if (destroyed || isFinishing() || tvFieldStatus == null) return;
+            if (count > 0) {
+                tvFieldStatus.setText(count + (count > 1
+                        ? " repères exacts ChatGPT" : " repère exact ChatGPT"));
+            } else {
+                tvFieldStatus.setText("Placement libre • aucun repère détecté");
             }
         });
     }
@@ -903,10 +932,12 @@ public class EditorActivity extends Activity {
         ensurePersistentMcpBridge();
         startPersistentMcpBridgeService();
 
-        String prompt = "@Remplissage auto documents ouvre le document actif. "
-                + "Regarde la vraie image de chaque page, remplis le document, "
-                + "contrôle la prévisualisation réelle et corrige jusqu’à ce que tout soit "
-                + "parfaitement aligné avant de me rendre le PDF final.";
+        String prompt = "@Remplissage auto documents ouvre exactement le document job_id "
+                + mcpJobId + " avec paper_get_document_context. "
+                + "Regarde la page réelle et son image-guide. Pour chaque valeur, choisis le "
+                + "repère exact et envoie son field_id dans paper_submit_fill_plan : le serveur "
+                + "ancrera le texte ou la coche au centre du champ. Contrôle ensuite la vraie "
+                + "prévisualisation et corrige jusqu’à alignement parfait avant de rendre le PDF final.";
 
         Intent direct = new Intent(Intent.ACTION_SEND);
         direct.setType("text/plain");
@@ -953,13 +984,15 @@ public class EditorActivity extends Activity {
         }
     }
 
-    private int uploadMcpPageImages(String endpoint, String token,
-                                    String jobId, int pageCount) {
-        int uploaded = 0;
+    private McpPageUploadResult uploadMcpPageImages(String endpoint, String token,
+                                                    String jobId, int pageCount) {
+        int uploadedPages = 0;
+        int uploadedGuides = 0;
 
         for (int i = 0; i < pageCount; i++) {
             Bitmap renderedBitmap = null;
             Bitmap uploadBitmap = null;
+            Bitmap guideBitmap = null;
             try {
                 RenderedPage rendered = renderPage(i, false);
                 renderedBitmap = rendered.bitmap;
@@ -968,9 +1001,24 @@ public class EditorActivity extends Activity {
                 byte[] jpeg = encodeMcpJpeg(uploadBitmap);
                 McpClient.uploadPageImageBlocking(
                         endpoint, token, jobId, i, jpeg);
-                uploaded++;
+                uploadedPages++;
 
-                final int progress = uploaded;
+                List<FormField> fields = fieldsForPage(i);
+                if (!fields.isEmpty()) {
+                    try {
+                        guideBitmap = drawMcpFieldGuide(uploadBitmap, i, fields);
+                        byte[] guideJpeg = encodeMcpJpeg(guideBitmap);
+                        McpClient.uploadGuideImageBlocking(
+                                endpoint, token, jobId, i, guideJpeg);
+                        uploadedGuides++;
+                    } catch (OutOfMemoryError guideOom) {
+                        AppLog.write(this, "uploadMcpFieldGuideOOM page=" + i, guideOom);
+                    } catch (Exception guideError) {
+                        AppLog.write(this, "uploadMcpFieldGuide page=" + i, guideError);
+                    }
+                }
+
+                final int progress = uploadedPages;
                 runOnUiThread(() -> {
                     if (!destroyed && !isFinishing() && jobId.equals(mcpJobId)) {
                         tvPosition.setText("Analyse visuelle ChatGPT • "
@@ -983,11 +1031,84 @@ public class EditorActivity extends Activity {
                 if (uploadBitmap != null && uploadBitmap != renderedBitmap) {
                     recycle(uploadBitmap);
                 }
+                recycle(guideBitmap);
                 recycle(renderedBitmap);
             }
         }
 
-        return uploaded;
+        return new McpPageUploadResult(uploadedPages, uploadedGuides);
+    }
+
+    private List<FormField> fieldsForPage(int requestedPage) {
+        synchronized (detectedFieldsByPage) {
+            List<FormField> fields = detectedFieldsByPage.get(requestedPage);
+            return fields == null ? new ArrayList<>() : new ArrayList<>(fields);
+        }
+    }
+
+    private Bitmap drawMcpFieldGuide(Bitmap source, int requestedPage,
+                                     List<FormField> fields) throws IOException {
+        if (source == null || source.isRecycled()) {
+            throw new IOException("Image source du guide indisponible");
+        }
+        Bitmap guide = source.copy(Bitmap.Config.ARGB_8888, true);
+        if (guide == null) throw new IOException("Création du guide impossible");
+
+        Canvas canvas = new Canvas(guide);
+        float width = guide.getWidth();
+        float height = guide.getHeight();
+        float stroke = Math.max(2f, Math.min(width, height) / 620f);
+        float textSize = Math.max(13f, Math.min(22f, width / 72f));
+
+        Paint boxPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        boxPaint.setStyle(Paint.Style.STROKE);
+        boxPaint.setStrokeWidth(stroke);
+
+        Paint labelBackground = new Paint(Paint.ANTI_ALIAS_FLAG);
+        labelBackground.setStyle(Paint.Style.FILL);
+        labelBackground.setColor(Color.rgb(25, 25, 30));
+        labelBackground.setAlpha(225);
+
+        Paint labelPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
+        labelPaint.setStyle(Paint.Style.FILL);
+        labelPaint.setColor(Color.WHITE);
+        labelPaint.setTextSize(textSize);
+        labelPaint.setFakeBoldText(true);
+
+        for (int fieldIndex = 0; fieldIndex < fields.size(); fieldIndex++) {
+            FormField field = fields.get(fieldIndex);
+            int color = field.type == FormField.Type.CHECKBOX
+                    ? Color.rgb(230, 33, 130)
+                    : field.type == FormField.Type.BOX
+                    ? Color.rgb(20, 116, 255)
+                    : Color.rgb(255, 92, 20);
+            boxPaint.setColor(color);
+
+            float left = field.x * width;
+            float top = field.y * height;
+            float right = (field.x + field.width) * width;
+            float bottom = (field.y + field.height) * height;
+            canvas.drawRect(new RectF(left, top, right, bottom), boxPaint);
+
+            String label = fieldIdFor(requestedPage, fieldIndex);
+            float labelWidth = labelPaint.measureText(label);
+            float padding = Math.max(2f, textSize * 0.20f);
+            float labelHeight = textSize + padding * 1.25f;
+            float labelLeft = Math.max(0f, Math.min(width - labelWidth - padding * 2f, left));
+            float labelTop = top - labelHeight;
+            if (labelTop < 0f) labelTop = Math.min(height - labelHeight, bottom + stroke);
+            RectF background = new RectF(labelLeft, labelTop,
+                    labelLeft + labelWidth + padding * 2f, labelTop + labelHeight);
+            canvas.drawRoundRect(background, padding, padding, labelBackground);
+            canvas.drawText(label, labelLeft + padding,
+                    labelTop + labelHeight - padding * 0.65f, labelPaint);
+        }
+        return guide;
+    }
+
+    private static String fieldIdFor(int requestedPage, int fieldIndex) {
+        return String.format(Locale.ROOT, "p%d_f%03d",
+                requestedPage + 1, fieldIndex + 1);
     }
 
     private Bitmap scaleForMcpVision(Bitmap source, int maxDimension) {
@@ -1457,12 +1578,12 @@ public class EditorActivity extends Activity {
         }
         root.put("pages", pages);
         root.put("instruction",
-                "ChatGPT décide du placement final après inspection visuelle de la vraie page. "
-                        + "Les x/y, la taille, l'alignement et le kind renvoyés sont autoritaires. "
-                        + "L'application ne snap pas vers les champs détectés, ne corrige pas x/y et ne redimensionne pas le texte. "
-                        + "Pour kind=text : x est l'ancre d'alignement et y la baseline exacte. "
-                        + "Pour kind=checkbox : x/y sont le centre exact de la marque. "
-                        + "Les field_hints sont uniquement des indices facultatifs.");
+                "ChatGPT décide quelle donnée appartient à quel champ après inspection de la page "
+                        + "réelle et de l'image-guide. Chaque placement doit inclure le field_id du "
+                        + "repère choisi. Le serveur utilise alors les mesures Android exactes pour "
+                        + "ancrer le texte sur la baseline ou centrer la coche, sans modifier les "
+                        + "autres éléments. x/y restent disponibles uniquement comme placement libre "
+                        + "de secours lorsqu'aucun repère fiable n'existe.");
         return root;
     }
 
@@ -1502,10 +1623,94 @@ public class EditorActivity extends Activity {
         return profile;
     }
 
-    private JSONArray buildMcpFieldHints(int pageCount, JSONObject document) {
-        // Architecture visuelle v3: aucune détection géométrique ne décide pour ChatGPT.
-        // Les pages propres + le texte/OCR disponible sont la source de placement.
-        return new JSONArray();
+    private JSONArray buildMcpFieldHints(int pageCount, JSONObject document) throws Exception {
+        JSONArray hints = new JSONArray();
+        JSONArray pages = document == null ? null : document.optJSONArray("pages");
+
+        for (int i = 0; i < pageCount; i++) {
+            List<FormField> fields = fieldsForPage(i);
+            if (fields.isEmpty()) {
+                Bitmap bitmap = null;
+                try {
+                    RenderedPage rendered = renderPage(i, false);
+                    bitmap = rendered.bitmap;
+                    fields = FormFieldDetector.detect(bitmap, i);
+                    synchronized (detectedFieldsByPage) {
+                        detectedFieldsByPage.put(i, new ArrayList<>(fields));
+                    }
+                } catch (OutOfMemoryError oom) {
+                    AppLog.write(this, "mcpFieldDetectionOOM page=" + i, oom);
+                    fields = new ArrayList<>();
+                } catch (Exception error) {
+                    AppLog.write(this, "mcpFieldDetection page=" + i, error);
+                    fields = new ArrayList<>();
+                } finally {
+                    recycle(bitmap);
+                }
+            }
+
+            JSONObject page = pages == null ? null : pages.optJSONObject(i);
+            JSONArray blocks = page == null ? null : page.optJSONArray("text_blocks");
+            float pageWidth = page == null ? 595f : (float) page.optDouble("width", 595.0);
+            float pageHeight = page == null ? 842f : (float) page.optDouble("height", 842.0);
+
+            for (int fieldIndex = 0; fieldIndex < fields.size(); fieldIndex++) {
+                FormField field = fields.get(fieldIndex);
+                JSONObject hint = new JSONObject();
+                String fieldId = fieldIdFor(i, fieldIndex);
+                float horizontalInset = field.type == FormField.Type.CHECKBOX
+                        ? 0f : Math.min(0.012f, field.width * 0.06f);
+
+                hint.put("field_id", fieldId);
+                hint.put("guide_label", fieldId);
+                hint.put("page_index", i);
+                hint.put("x", field.x);
+                hint.put("y", field.y);
+                hint.put("width", field.width);
+                hint.put("height", field.height);
+                hint.put("content_width", Math.max(0.001f,
+                        field.width - horizontalInset * 1.5f));
+                hint.put("type", field.type.name().toLowerCase(Locale.ROOT));
+                hint.put("confidence", field.confidence);
+                hint.put("anchor_x", field.textX());
+                hint.put("baseline_y", field.textBaselineY());
+                hint.put("mark_x", field.centerX());
+                hint.put("mark_y", field.centerY());
+                hint.put("recommended_size",
+                        recommendedFieldSize(field, pageWidth, pageHeight));
+                hint.put("selection_required", true);
+                hint.put("exact_anchor_available", true);
+                hint.put("source", "android_field_detector_v2");
+
+                JSONArray nearby = findNearbyText(field, blocks);
+                if (nearby.length() > 0) hint.put("nearby_text", nearby);
+
+                if (field.type == FormField.Type.CHECKBOX) {
+                    hint.put("recommended_text", "X");
+                    hint.put("semantic_instruction",
+                            "Choisir ce field_id uniquement si cette case correspond au sens voulu; "
+                                    + "la marque sera centrée automatiquement.");
+                } else {
+                    hint.put("semantic_instruction",
+                            "Choisir ce field_id si ce champ correspond à la donnée; le texte sera "
+                                    + "posé automatiquement sur sa baseline et ajusté à sa largeur.");
+                }
+                hints.put(hint);
+            }
+        }
+        return hints;
+    }
+
+    private static float recommendedFieldSize(FormField field,
+                                              float pageWidth, float pageHeight) {
+        float available;
+        if (field.type == FormField.Type.CHECKBOX) {
+            available = Math.min(field.width * Math.max(1f, pageWidth),
+                    field.height * Math.max(1f, pageHeight)) * 0.68f;
+            return Math.max(4f, Math.min(8f, available));
+        }
+        available = field.height * Math.max(1f, pageHeight) * 0.42f;
+        return Math.max(4f, Math.min(9f, available));
     }
 
     private JSONArray findNearbyText(FormField field, JSONArray blocks) throws Exception {

@@ -534,6 +534,68 @@ public final class McpClient {
         }
     }
 
+    public static void uploadGuideImageBlocking(String endpoint, String token,
+                                                String jobId, int pageIndex,
+                                                byte[] jpegBytes) throws Exception {
+        if (endpoint == null || !endpoint.startsWith("https://")) {
+            throw new IllegalArgumentException("URL MCP invalide");
+        }
+        if (jobId == null || jobId.trim().isEmpty()) {
+            throw new IllegalArgumentException("jobId manquant");
+        }
+        if (pageIndex < 0 || pageIndex > 999) {
+            throw new IllegalArgumentException("pageIndex invalide");
+        }
+        if (jpegBytes == null || jpegBytes.length < 100 || jpegBytes.length > 1_500_000) {
+            throw new IllegalArgumentException("Guide JPEG invalide ou trop volumineux");
+        }
+
+        HttpURLConnection connection = null;
+        try {
+            String separator = endpoint.contains("?") ? "&" : "?";
+            String uploadUrl = endpoint + separator
+                    + "app_action=upload_guide_page&job_id="
+                    + URLEncoder.encode(jobId, "UTF-8")
+                    + "&page_index=" + pageIndex;
+
+            connection = (HttpURLConnection) new URL(uploadUrl).openConnection();
+            connection.setConnectTimeout(20000);
+            connection.setReadTimeout(45000);
+            connection.setRequestMethod("POST");
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "image/jpeg");
+            connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty("User-Agent",
+                    "RemplissagePapierOfficiel/" + BuildConfig.VERSION_NAME);
+            if (token != null && !token.trim().isEmpty()) {
+                connection.setRequestProperty("Authorization", "Bearer " + token.trim());
+            }
+            connection.setFixedLengthStreamingMode(jpegBytes.length);
+
+            try (OutputStream output = connection.getOutputStream()) {
+                output.write(jpegBytes);
+                output.flush();
+            }
+
+            int code = connection.getResponseCode();
+            InputStream stream = code >= 200 && code < 400
+                    ? connection.getInputStream() : connection.getErrorStream();
+            String body = readBody(stream);
+            if (code < 200 || code >= 300) {
+                throw new IllegalStateException("Guide refusé (HTTP " + code + ") : "
+                        + abbreviate(body, 800));
+            }
+
+            JSONObject root = new JSONObject(body);
+            if (!root.optBoolean("ok", false)) {
+                throw new IllegalStateException(
+                        root.optString("error", "Guide refusé par le serveur"));
+            }
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
     public static void uploadPreviewImageBlocking(String endpoint, String token,
                                                   String jobId, int pageIndex,
                                                   byte[] jpegBytes) throws Exception {

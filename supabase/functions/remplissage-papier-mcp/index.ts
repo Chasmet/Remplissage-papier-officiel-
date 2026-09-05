@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
+import { anchorPlacementsToFields } from "./placement-anchoring.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -8,12 +9,12 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
 
 const FUNCTION_SLUG = "remplissage-papier-mcp";
 const PROTOCOL_VERSION = "2025-06-18";
-const SERVER_VERSION = "5.1.0";
+const SERVER_VERSION = "5.2.0";
 const PDF_BUCKET = "remplissage-mcp-pdfs";
 const PAGE_BUCKET = "remplissage-mcp-pages";
 const MAX_PAGE_IMAGE_BYTES = 1_500_000;
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
-const ACTIVE_MS = 120_000;
+const ACTIVE_MS = 15 * 60_000;
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -166,8 +167,14 @@ function validatePlacements(raw: unknown) {
   return raw.map((item, index) => {
     const p = safeObject(item);
     const pageIndex = Number(p.page_index ?? p.pageIndex ?? p.page ?? 0);
-    const x = Number(p.x);
-    const y = Number(p.y);
+    const fieldId = String(p.field_id ?? "").trim();
+    let x = Number(p.x);
+    let y = Number(p.y);
+    if (fieldId && (!Number.isFinite(x) || !Number.isFinite(y))) {
+      // Valeurs provisoires remplacées par l'ancre exacte du field_id juste après validation.
+      x = 0;
+      y = 0;
+    }
     const kind = normalizeKind(p.kind ?? p.type);
     const state = normalizeDataState(p.data_state ?? p.state);
     let text = String(p.text ?? "");
@@ -221,8 +228,9 @@ function validatePlacements(raw: unknown) {
     const height = Number(p.height ?? 0);
     if (Number.isFinite(width) && width > 0 && width <= 1) out.width = width;
     if (Number.isFinite(height) && height > 0 && height <= 1) out.height = height;
-    if (typeof p.field_id === "string" && p.field_id.trim()) out.field_id = p.field_id.trim();
+    if (fieldId) out.field_id = fieldId;
     if (typeof p.checked === "boolean") out.checked = p.checked;
+    if (p.anchored_to_field === true) out.anchored_to_field = true;
     return out;
   });
 }
@@ -307,13 +315,35 @@ async function pageImageToolResult(sessionId: string, jobId: string, pageIndex: 
   if (error || !data) throw new Error("Image de cette page non disponible");
   const bytes = new Uint8Array(await data.arrayBuffer());
   if (bytes.length > MAX_PAGE_IMAGE_BYTES) throw new Error("Image de page trop volumineuse");
+
+  const guidePath = `${sessionId}/${jobId}/guide-${String(pageIndex).padStart(4, "0")}.jpg`;
+  const { data: guideData } = await supabase.storage.from(PAGE_BUCKET).download(guidePath);
+  let guideBytes: Uint8Array | null = null;
+  if (guideData) {
+    const candidate = new Uint8Array(await guideData.arrayBuffer());
+    if (candidate.length >= 100 && candidate.length <= MAX_PAGE_IMAGE_BYTES) guideBytes = candidate;
+  }
+
+  const pageFields = Array.isArray(structuredExtra.field_hints)
+    ? structuredExtra.field_hints
+      .map((hint) => safeObject(hint))
+      .filter((hint) => Number(hint.page_index ?? -1) === pageIndex)
+    : [];
+  const content: Array<Record<string, unknown>> = [
+    { type: "text", text },
+    { type: "image", data: bytesToBase64(bytes), mimeType: "image/jpeg" },
+  ];
+  if (guideBytes) {
+    content.push({
+      type: "text",
+      text: "Image-guide de la même page. Les cadres colorés portent les field_id exacts. Choisissez le bon repère selon son libellé voisin, puis transmettez ce field_id; ne recopiez pas sa position à l'œil.",
+    });
+    content.push({ type: "image", data: bytesToBase64(guideBytes), mimeType: "image/jpeg" });
+  }
   await markVisualPageViewed(sessionId, jobId, document, pageIndex);
   return {
     __mcp_image_result: true,
-    content: [
-      { type: "text", text },
-      { type: "image", data: bytesToBase64(bytes), mimeType: "image/jpeg" },
-    ],
+    content,
     structuredContent: {
       job_id: jobId,
       page_index: pageIndex,
@@ -322,6 +352,10 @@ async function pageImageToolResult(sessionId: string, jobId: string, pageIndex: 
       coordinate_system: "normalized_0_1",
       text_y_reference: "baseline",
       checkbox_xy_reference: "center",
+      field_guide_available: Boolean(guideBytes),
+      exact_field_anchoring: true,
+      field_selection_rule: "Inclure le field_id choisi dans chaque placement. Le serveur remplace x/y par l'ancre Android exacte.",
+      page_field_hints: pageFields,
       ...structuredExtra,
     },
   };
@@ -485,6 +519,32 @@ function validateLayoutServer(document: Record<string, any>, registry: Array<Rec
       warnings.push({ overlay_id: p.overlay_id, problem: "font_too_large" });
     }
     boxes.push({ overlay_id: p.overlay_id, page_index: p.page_index, left, top, right, bottom });
+
+    const pages = Array.isArray(document.pages) ? document.pages : [];
+    const page = safeObject(pages[Number(p.page_index ?? 0)]);
+    const textBlocks = Array.isArray(page.text_blocks) ? page.text_blocks : [];
+    const overlayArea = Math.max(1, (right - left) * (bottom - top));
+    for (const rawBlock of textBlocks) {
+      const block = safeObject(rawBlock);
+      const blockLeft = Number(block.x ?? 0) * pageW;
+      const blockTop = Number(block.y ?? 0) * pageH;
+      const blockRight = blockLeft + Number(block.width ?? 0) * pageW;
+      const blockBottom = blockTop + Number(block.height ?? 0) * pageH;
+      const blockWidth = blockRight - blockLeft;
+      const blockHeight = blockBottom - blockTop;
+      if (blockWidth <= 0 || blockHeight <= 0
+          || blockWidth > pageW * 0.38 || blockHeight > pageH * 0.045) continue;
+      const overlapWidth = Math.max(0, Math.min(right, blockRight) - Math.max(left, blockLeft));
+      const overlapHeight = Math.max(0, Math.min(bottom, blockBottom) - Math.max(top, blockTop));
+      if ((overlapWidth * overlapHeight) / overlayArea >= 0.35) {
+        warnings.push({
+          overlay_id: p.overlay_id,
+          problem: "printed_text_collision",
+          printed_text: String(block.text ?? "").slice(0, 120),
+        });
+        break;
+      }
+    }
   }
   for (let i = 0; i < boxes.length; i++) {
     for (let j = i + 1; j < boxes.length; j++) {
@@ -502,7 +562,7 @@ function validateLayoutServer(document: Record<string, any>, registry: Array<Rec
     valid: warnings.length === 0,
     warnings,
     engine: "server_safety_estimate",
-    exact_android_metrics_available_in_app_version: "1.10.0",
+    exact_android_metrics_available_in_app_version: "1.12.0",
   };
 }
 
@@ -537,19 +597,19 @@ const placementSchema = {
     kind: { type: "string", enum: ["text", "checkbox", "date", "signature"] },
     width: { type: "number", minimum: 0, maximum: 1 },
     height: { type: "number", minimum: 0, maximum: 1 },
-    field_id: { type: "string", description: "Hint informatif uniquement; ne modifie jamais x/y." },
+    field_id: { type: "string", description: "Repère exact choisi dans l'image-guide. Lorsqu'il est fourni, ses mesures Android remplacent automatiquement x/y, largeur, hauteur et type de case." },
     checked: { type: "boolean" },
     mark: { type: "string" },
     data_state: { type: "string", enum: ["known", "unknown", "requires_user", "requires_signature"] },
   },
-  required: ["page_index", "x", "y", "size"],
+  required: ["page_index"],
   additionalProperties: false,
 };
 
 const tools = [
   {
     name: "paper_open_active_document",
-    description: "Point d'entrée principal. Trouve le document actif et renvoie immédiatement sa vraie page 1 en image, avec système de coordonnées exact.",
+    description: "Point d'entrée principal. Trouve le document actif et renvoie la page réelle puis son image-guide. Utiliser un field_id pour chaque valeur permet un ancrage Android exact.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { title: "Ouvrir le document actif", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
@@ -579,7 +639,7 @@ const tools = [
   },
   {
     name: "paper_get_document_context",
-    description: "Retourne le contexte et la vraie page courante en image. Les hints n'ont aucune autorité sur les coordonnées choisies par ChatGPT.",
+    description: "Retourne le contexte, la page réelle, l'image-guide et les field_id mesurés par Android. ChatGPT choisit le champ selon son sens; le serveur réalise ensuite l'ancrage exact.",
     inputSchema: { type: "object", properties: { job_id: { type: "string" } }, required: ["job_id"], additionalProperties: false },
     annotations: { title: "Contexte du document", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
@@ -591,13 +651,13 @@ const tools = [
   },
   {
     name: "paper_get_detected_fields",
-    description: "Retourne uniquement les zones détectées comme indications visuelles. Elles ne déplacent jamais les overlays.",
+    description: "Retourne les champs mesurés par Android. Le field_id choisi devient une ancre exacte pour le texte ou la coche.",
     inputSchema: { type: "object", properties: { job_id: { type: "string" } }, required: ["job_id"], additionalProperties: false },
     annotations: { title: "Zones détectées", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   {
     name: "paper_get_page_image",
-    description: "Renvoie la vraie page entière du PDF sans overlays. ChatGPT doit se baser sur cette image pour les placements.",
+    description: "Renvoie la page entière sans overlays puis son image-guide avec field_id. Choisir le repère sémantiquement correct au lieu d'estimer x/y.",
     inputSchema: { type: "object", properties: { job_id: { type: "string" }, page_index: { type: "integer", minimum: 0 } }, required: ["job_id", "page_index"], additionalProperties: false },
     annotations: { title: "Voir une page", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
@@ -615,7 +675,7 @@ const tools = [
   },
   {
     name: "paper_submit_fill_plan",
-    description: "Envoie le plan visuel initial. Les coordonnées sont autoritaires et chaque élément reçoit un overlay_id stable. Après application, la preview Android peut être renvoyée directement.",
+    description: "Envoie le plan initial. Préférer field_id pour chaque valeur: le serveur remplace les coordonnées approximatives par l'ancre Android exacte, centre les coches et ajuste la taille au champ. Après application, inspecter la preview réelle.",
     inputSchema: {
       type: "object",
       properties: {
@@ -749,7 +809,7 @@ async function handleToolCall(sessionId: string, name: string, args: Record<stri
       jobs: data ?? [],
       active_document_available: (data ?? []).length > 0,
       next_action: (data ?? []).length > 0
-        ? "Appelez paper_get_document_context sur le job_id avant tout placement afin de recevoir la vraie page en image."
+        ? "Appelez paper_get_document_context sur le job_id avant tout placement afin de recevoir la page réelle, l'image-guide et les field_id exacts."
         : "Ouvrez un PDF dans l'application Android.",
     };
   }
@@ -787,7 +847,7 @@ async function handleToolCall(sessionId: string, name: string, args: Record<stri
 
   if (name === "paper_open_active_document" || name === "paper_get_active_document") {
     const { data, error } = await supabase.from("remplissage_mcp_jobs")
-      .select("id,status,source,is_active,document,created_at,updated_at,expires_at,app_last_seen_at,preview_pages,preview_updated_at")
+      .select("id,status,source,is_active,document,field_hints,created_at,updated_at,expires_at,app_last_seen_at,preview_pages,preview_updated_at")
       .eq("session_id", sessionId).eq("is_active", true).neq("status", "cancelled")
       .gte("app_last_seen_at", activeCutoffIso())
       .order("updated_at", { ascending: false }).limit(1);
@@ -803,6 +863,8 @@ async function handleToolCall(sessionId: string, name: string, args: Record<stri
       source: row.source,
       app_version: document.app_version ?? null,
       page_images_ready: document.page_images_ready === true,
+      field_guides_ready: document.field_guides_ready === true,
+      detected_field_count: Array.isArray(row.field_hints) ? row.field_hints.length : 0,
       current_overlays: registryFromDocument(document),
       preview_pages: row.preview_pages ?? [],
       coordinate_system: "normalized_0_1",
@@ -813,8 +875,8 @@ async function handleToolCall(sessionId: string, name: string, args: Record<stri
     const pageCount = Number(document.page_count ?? document.pageCount ?? 0);
     if (document.page_images_ready === true && pageCount > 0) {
       return await pageImageToolResult(sessionId, row.id, 0, document,
-        "Document actif trouvé. Voici la vraie page 1. Les coordonnées sont strictes: x/y 0..1; y texte = baseline; checkbox = centre.",
-        { active_document_available: true, document: meta });
+        "Document actif trouvé. Voici la page réelle puis, si disponible, son guide. Choisissez les field_id correspondant aux libellés; n'estimez x/y que lorsqu'aucun repère n'existe.",
+        { active_document_available: true, document: meta, field_hints: row.field_hints ?? [] });
     }
     return { active_document_available: true, document: meta, instruction: "Images de pages pas encore prêtes." };
   }
@@ -831,13 +893,18 @@ async function handleToolCall(sessionId: string, name: string, args: Record<stri
         y_reference: "top_to_bottom",
         text_y_reference: "baseline",
         checkbox_xy_reference: "center",
-        coordinates_authoritative: true,
-        snapping_disabled: true,
+        coordinates_authoritative_without_field_id: true,
+        exact_field_anchoring_available: Array.isArray(job.field_hints) && job.field_hints.length > 0,
         pages: Array.from({ length: Math.max(0, count) }, (_, i) => getPageGeometry(document, i)),
       };
     }
     if (name === "paper_get_detected_fields") {
-      return { job_id: job.id, detected_fields_are_hints_only: true, fields: job.field_hints ?? [] };
+      return {
+        job_id: job.id,
+        fields_are_exact_anchors_when_selected: true,
+        selection_rule: "Choisir le field_id selon l'image-guide et le texte voisin.",
+        fields: job.field_hints ?? [],
+      };
     }
     const context = {
       job_id: job.id,
@@ -847,7 +914,8 @@ async function handleToolCall(sessionId: string, name: string, args: Record<stri
         y: "0..1 top to bottom",
         text_y_reference: "baseline",
         checkbox_xy_reference: "center",
-        authoritative: true,
+        free_coordinates_are_fallback_only: true,
+        field_id_overrides_coordinates: true,
       },
       document,
       profile: job.profile ?? {},
@@ -861,11 +929,11 @@ async function handleToolCall(sessionId: string, name: string, args: Record<stri
     ));
     if (document.page_images_ready === true && pageCount > 0) {
       return await pageImageToolResult(sessionId, job.id, requestedPage, document,
-        `Voici la vraie page ${requestedPage + 1} du PDF. Placez les éléments uniquement après cette inspection visuelle. Après chaque remplissage, contrôlez la preview et corrigez jusqu'à alignement parfait.`,
+        `Voici la page réelle ${requestedPage + 1}. L'image suivante est le guide des champs. Pour chaque donnée, choisissez le field_id dont le texte voisin correspond, puis envoyez-le dans paper_submit_fill_plan. Après remplissage, contrôlez la preview réelle.`,
         {
           ...context,
           legacy_connector_compatible: true,
-          next_action: "Appelez paper_submit_fill_plan avec des coordonnées calculées sur cette image.",
+          next_action: "Appelez paper_submit_fill_plan avec un field_id par valeur; x/y ne servent que de secours.",
         });
     }
     return {
@@ -880,7 +948,8 @@ async function handleToolCall(sessionId: string, name: string, args: Record<stri
     const job = await getJobOwned(sessionId, jobId);
     if (!Number.isInteger(pageIndex) || pageIndex < 0) throw new Error("page_index invalide");
     return await pageImageToolResult(sessionId, jobId, pageIndex, safeObject(job.document),
-      `Page ${pageIndex + 1}. Regardez directement l'image réelle; n'utilisez pas l'OCR comme source de placement.`);
+      `Page ${pageIndex + 1}. Regardez la page réelle puis son guide; choisissez un field_id selon le libellé voisin au lieu d'estimer les coordonnées.`,
+      { field_hints: job.field_hints ?? [] });
   }
 
   if (name === "paper_get_preview_image") {
@@ -911,7 +980,13 @@ async function handleToolCall(sessionId: string, name: string, args: Record<stri
     const document = safeObject(job.document);
     const rawPlacements = Array.isArray(args.placements) ? args.placements : [];
     const previousRegistry = registryFromDocument(document);
-    const registry = validatePlacements(rawPlacements).map((placement, index) => {
+    const anchoring = anchorPlacementsToFields(
+      rawPlacements,
+      validatePlacements(rawPlacements),
+      job.field_hints,
+      document,
+    );
+    const registry = anchoring.placements.map((placement, index) => {
       const raw = safeObject(rawPlacements[index]);
       const explicitId = String(raw.overlay_id ?? raw.id ?? raw.field_id ?? "").trim();
       const previous = previousRegistry[index];
@@ -924,11 +999,43 @@ async function handleToolCall(sessionId: string, name: string, args: Record<stri
     if (missing.length) {
       if (document.page_images_ready !== true) throw new Error("Les pages visuelles ne sont pas encore prêtes");
       return await pageImageToolResult(sessionId, jobId, missing[0], document,
-        `Aucun changement n'a été appliqué. Inspectez réellement la page ${missing[0] + 1}, corrigez vos coordonnées à partir de cette image, puis renvoyez le plan complet avec paper_submit_fill_plan.`,
+        `Aucun changement n'a été appliqué. Inspectez la page réelle ${missing[0] + 1} et son image-guide, choisissez le field_id exact de chaque valeur, puis renvoyez le plan complet.`,
         {
           inspection_required: true,
           plan_applied: false,
           remaining_pages: missing.slice(1).map((p) => p + 1),
+          field_hints: job.field_hints ?? [],
+        });
+    }
+
+    const preflight = validateLayoutServer(document, registry);
+    const anchoredIds = new Set(
+      registry.filter((placement) => placement.anchored_to_field === true)
+        .map((placement) => String(placement.overlay_id)),
+    );
+    const blockingWarnings = preflight.warnings.filter((warning: Record<string, any>) =>
+      warning.problem === "text_outside_page"
+      || warning.problem === "font_too_large"
+      || warning.problem === "text_too_wide"
+      || warning.problem === "overlay_overlap"
+      || (warning.problem === "printed_text_collision"
+        && !anchoredIds.has(String(warning.overlay_id))),
+    );
+    if (blockingWarnings.length) {
+      const firstOverlay = registry.find((placement) =>
+        String(placement.overlay_id) === String(blockingWarnings[0].overlay_id));
+      const rawWarningPage = Number(firstOverlay?.page_index ?? 0);
+      const warningPage = Number.isInteger(rawWarningPage) && rawWarningPage >= 0
+        ? rawWarningPage
+        : 0;
+      return await pageImageToolResult(sessionId, jobId, warningPage, document,
+        "Plan refusé avant rendu: au moins un texte libre recouvre du contenu imprimé ou dépasse son champ. Choisissez les field_id correspondants dans le guide; le serveur recalculera les ancres et tailles.",
+        {
+          plan_applied: false,
+          preflight_failed: true,
+          layout_warnings: blockingWarnings,
+          field_hints: job.field_hints ?? [],
+          exact_anchoring: anchoring.report,
         });
     }
     const { submittedAt } = await submitRegistryCommand(sessionId, job, registry,
@@ -946,17 +1053,33 @@ async function handleToolCall(sessionId: string, name: string, args: Record<stri
             legacy_correction_tool: "paper_submit_fill_plan",
             overlay_registry: registry,
             changed_overlay_ids: registry.map((p) => p.overlay_id),
+            exact_anchoring: anchoring.report,
+            anchored_overlay_count: anchoring.report.length,
           });
       }
     }
-    return { ok: true, job_id: jobId, status: "ready", overlay_registry: registry, preview_pending: true };
+    return {
+      ok: true,
+      job_id: jobId,
+      status: "ready",
+      overlay_registry: registry,
+      exact_anchoring: anchoring.report,
+      anchored_overlay_count: anchoring.report.length,
+      preview_pending: true,
+    };
   }
 
   if (name === "paper_add_overlay") {
     const jobId = String(args.job_id ?? "").trim();
     const job = await getJobOwned(sessionId, jobId);
     const registry = registryFromDocument(safeObject(job.document));
-    const incoming = validatePlacements([args.overlay])[0];
+    const anchoring = anchorPlacementsToFields(
+      [args.overlay],
+      validatePlacements([args.overlay]),
+      job.field_hints,
+      safeObject(job.document),
+    );
+    const incoming = anchoring.placements[0];
     if (registry.some((p) => p.overlay_id === incoming.overlay_id)) {
       throw new Error("overlay_id déjà utilisé");
     }
@@ -968,8 +1091,8 @@ async function handleToolCall(sessionId: string, name: string, args: Record<stri
       : null;
     if (state) return await previewImageToolResult(sessionId, jobId, Number(incoming.page_index),
       `Overlay ${incoming.overlay_id} ajouté. Vérifiez la preview puis corrigez localement si nécessaire.`,
-      { overlay_id: incoming.overlay_id, overlay_registry: registry });
-    return { ok: true, job_id: jobId, overlay: incoming, preview_pending: true };
+      { overlay_id: incoming.overlay_id, overlay_registry: registry, exact_anchoring: anchoring.report });
+    return { ok: true, job_id: jobId, overlay: incoming, exact_anchoring: anchoring.report, preview_pending: true };
   }
 
   if (name === "paper_update_overlay") {
@@ -1046,7 +1169,14 @@ async function handleToolCall(sessionId: string, name: string, args: Record<stri
     const job = await getJobOwned(sessionId, jobId);
     const document = safeObject(job.document);
     let registry = registryFromDocument(document);
-    const incoming = Array.isArray(args.placements) ? validatePlacements(args.placements) : [];
+    const rawIncoming = Array.isArray(args.placements) ? args.placements : [];
+    const anchoring = anchorPlacementsToFields(
+      rawIncoming,
+      validatePlacements(rawIncoming),
+      job.field_hints,
+      document,
+    );
+    const incoming = anchoring.placements;
     const targetPage = Number(args.page_index ?? -1);
 
     if (action === "replace_document") registry = incoming;
@@ -1070,7 +1200,7 @@ async function handleToolCall(sessionId: string, name: string, args: Record<stri
 
     await submitRegistryCommand(sessionId, job, registry,
       String(args.notes ?? `Commande ${action}`), incoming.map((p) => String(p.overlay_id)));
-    return { ok: true, job_id: jobId, action, overlay_registry: registry };
+    return { ok: true, job_id: jobId, action, overlay_registry: registry, exact_anchoring: anchoring.report };
   }
 
   if (name === "paper_get_job_status") {
@@ -1336,7 +1466,7 @@ async function handleMcp(req: Request, body: Record<string, any>) {
       protocolVersion: PROTOCOL_VERSION,
       capabilities: { tools: { listChanged: true } },
       serverInfo: { name: "Remplissage Papier MCP", version: SERVER_VERSION },
-      instructions: "Flux recommandé: paper_open_active_document → inspection visuelle → paper_submit_fill_plan → preview → paper_update_overlay répété jusqu'à validation → paper_get_filled_document. Connecteur ancien: paper_get_document_context renvoie aussi l'image réelle et paper_submit_fill_plan permet de remplacer le plan complet après chaque preview. Les coordonnées ChatGPT sont autoritaires, sans snap. y texte = baseline; checkbox = centre.",
+      instructions: "Flux recommandé: paper_open_active_document → inspecter la page réelle et l'image-guide → choisir le field_id de chaque valeur → paper_submit_fill_plan → preview → paper_update_overlay si nécessaire → paper_validate_layout → paper_get_filled_document. Un field_id sélectionné active l'ancrage Android exact: baseline, largeur et case à cocher sont corrigées automatiquement. x/y libres ne sont qu'un secours lorsqu'aucun repère fiable n'existe. Connecteur ancien: paper_get_document_context et paper_submit_fill_plan offrent le même ancrage field_id.",
     }, session.id);
   }
   if (method === "ping") return rpcResult(id, {}, session.id);
@@ -1399,7 +1529,8 @@ async function handleChatUploadBytes(uploadToken: string, req: Request) {
   return jsonResponse({ ok: true, job_id: data.id, status: "pending", bytes: bytes.length });
 }
 
-async function handleBinaryUpload(req: Request, session: { id: string }, url: URL, kind: "page" | "preview" | "pdf") {
+async function handleBinaryUpload(req: Request, session: { id: string }, url: URL,
+                                  kind: "page" | "guide" | "preview" | "pdf") {
   const jobId = String(url.searchParams.get("job_id") ?? "").trim();
   const job = await getJobOwned(session.id, jobId);
   const bytes = new Uint8Array(await req.arrayBuffer());
@@ -1424,6 +1555,8 @@ async function handleBinaryUpload(req: Request, session: { id: string }, url: UR
   }
   const filename = kind === "page"
     ? `page-${String(pageIndex).padStart(4, "0")}.jpg`
+    : kind === "guide"
+    ? `guide-${String(pageIndex).padStart(4, "0")}.jpg`
     : `preview-${String(pageIndex).padStart(4, "0")}.jpg`;
   const path = `${session.id}/${jobId}/${filename}`;
   const { error } = await supabase.storage.from(PAGE_BUCKET).upload(path, bytes, { contentType: "image/jpeg", upsert: true });
@@ -1434,6 +1567,19 @@ async function handleBinaryUpload(req: Request, session: { id: string }, url: UR
     const count = Number(document.page_count ?? document.pageCount ?? 0);
     document.page_images_ready = true;
     if (!Array.isArray(document.pages)) document.pages = Array.from({ length: Math.max(count, pageIndex + 1) }, () => ({}));
+    await supabase.from("remplissage_mcp_jobs").update({ document, app_last_seen_at: now, is_active: true, updated_at: now })
+      .eq("id", jobId).eq("session_id", session.id);
+  } else if (kind === "guide") {
+    const document = safeObject(job.document);
+    const guidePages = Array.isArray(document.field_guide_pages)
+      ? document.field_guide_pages.map(Number).filter((value: number) => Number.isInteger(value) && value >= 0)
+      : [];
+    if (!guidePages.includes(pageIndex)) guidePages.push(pageIndex);
+    guidePages.sort((a: number, b: number) => a - b);
+    const count = Number(document.page_count ?? document.pageCount ?? 0);
+    document.field_guide_pages = guidePages;
+    document.field_guides_count = guidePages.length;
+    document.field_guides_ready = count > 0 && guidePages.length >= count;
     await supabase.from("remplissage_mcp_jobs").update({ document, app_last_seen_at: now, is_active: true, updated_at: now })
       .eq("id", jobId).eq("session_id", session.id);
   } else {
@@ -1462,6 +1608,7 @@ Deno.serve(async (req: Request) => {
       const session = await getSession(req);
       if (!session) return jsonResponse({ ok: false, error: "Session invalide" }, 401);
       if (appAction === "upload_page") return await handleBinaryUpload(req, session, url, "page");
+      if (appAction === "upload_guide_page") return await handleBinaryUpload(req, session, url, "guide");
       if (appAction === "upload_preview_page") return await handleBinaryUpload(req, session, url, "preview");
       if (appAction === "upload_filled_pdf") return await handleBinaryUpload(req, session, url, "pdf");
     }
