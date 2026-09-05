@@ -1,5 +1,16 @@
 # Historique des versions
 
+## 1.13.0
+
+- Synchronisation complète des pages, guides et du profil à la réouverture et via le bouton Synchroniser.
+- Reprise automatique après interruption ; état « prêt » réservé à un envoi complet confirmé.
+- Ouverture de ChatGPT différée jusqu’à la préparation du document ; distinction entre profil vide et transmis.
+- Publication d’un guide même sur une page sans repère détecté.
+- Les messages de présence du pont ne remplacent plus les modifications locales ni la progression affichée.
+- Conservation des identifiants et états des éléments dans les brouillons.
+- Copie du PDF via un fichier temporaire pour préserver la source en cas d’erreur ou de copie sur elle-même.
+- Actualisation des prévisualisations après effacement du dernier élément d’une page.
+
 ## 1.12.1
 
 - Migration automatique des brouillons créés avant l’ancrage exact.

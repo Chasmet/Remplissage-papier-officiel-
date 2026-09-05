@@ -44,6 +44,8 @@ public final class LiveEditorPublisher {
     private static ScheduledExecutorService scheduler;
 
     private static volatile String lastFingerprint = "";
+    private static String lastJobId = "";
+    private static Set<Integer> lastPublishedPages = new HashSet<>();
 
     private LiveEditorPublisher() {
     }
@@ -96,6 +98,8 @@ public final class LiveEditorPublisher {
 
         Set<Integer> pages = new HashSet<>();
         pages.add(0);
+        // Re-publish pages whose last overlay was deleted, so old text disappears remotely.
+        if (jobId.equals(lastJobId)) pages.addAll(lastPublishedPages);
         for (TextOverlay overlay : overlays) {
             if (overlay != null && overlay.pageIndex >= 0) pages.add(overlay.pageIndex);
         }
@@ -114,6 +118,8 @@ public final class LiveEditorPublisher {
 
         if (sent > 0) {
             lastFingerprint = fingerprint;
+            lastJobId = jobId;
+            lastPublishedPages = new HashSet<>(pages);
             AppLog.write(context,
                     "LIVE_EDITOR publié • pages=" + sent + " • overlays=" + overlays.size(),
                     null);

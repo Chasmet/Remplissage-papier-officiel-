@@ -51,6 +51,9 @@ jobs:
           echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
           echo "Version détectée: $VERSION ($VERSION_CODE)"
 
+      - name: PDF copy regression tests
+        run: sh tests/run-java-tests.sh
+
       - name: Compile, tests and lint
         shell: bash
         run: |

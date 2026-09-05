@@ -40,11 +40,11 @@ public final class McpBridgeStore {
         }
 
         File source = new File(dir, "source.pdf");
-        copyUriToFile(context, sourceUri, source);
-        saveOverlays(context, jobId, overlays);
-
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         boolean sameJob = jobId.equals(prefs.getString(KEY_ACTIVE_JOB, ""));
+        if (!sameJob || !source.isFile()) copyUriToFile(context, sourceUri, source);
+        // The bridge may have applied a command while the activity was preparing pages.
+        if (!sameJob) saveOverlays(context, jobId, overlays);
         SharedPreferences.Editor edit = prefs.edit()
                 .putString(KEY_ACTIVE_JOB, jobId)
                 .putString(KEY_SOURCE_PATH, source.getAbsolutePath())
@@ -70,9 +70,8 @@ public final class McpBridgeStore {
 
         File target = new File(dir, "source.pdf");
         if (!sourceFile.getCanonicalFile().equals(target.getCanonicalFile())) {
-            try (FileInputStream input = new FileInputStream(sourceFile);
-                 FileOutputStream output = new FileOutputStream(target, false)) {
-                copyStream(input, output);
+            try (FileInputStream input = new FileInputStream(sourceFile)) {
+                AtomicPdfCopy.copy(input, target, MAX_PDF_BYTES);
             }
         }
 
@@ -273,14 +272,9 @@ public final class McpBridgeStore {
     }
 
     private static void copyUriToFile(Context context, Uri uri, File target) throws Exception {
-        try (InputStream input = context.getContentResolver().openInputStream(uri);
-             FileOutputStream output = new FileOutputStream(target, false)) {
+        try (InputStream input = context.getContentResolver().openInputStream(uri)) {
             if (input == null) throw new IllegalStateException("PDF source inaccessible");
-            copyStream(input, output);
-        }
-
-        if (target.length() < 5) {
-            throw new IllegalArgumentException("PDF source invalide");
+            AtomicPdfCopy.copy(input, target, MAX_PDF_BYTES);
         }
     }
 

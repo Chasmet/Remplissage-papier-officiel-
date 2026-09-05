@@ -102,6 +102,12 @@ public class EditorActivity extends Activity {
     private String currentDocumentNameOverride = "";
     private boolean inboundNeedsContextSync = false;
     private boolean clearLegacyMcpOverlaysAfterDraftLoad = false;
+    private boolean contextReady;
+    private boolean contextSyncInProgress;
+    private boolean openChatGptWhenReady;
+    private long contextRetryAfter;
+    private String syncedProfile = "";
+    private volatile int contextGeneration;
     private volatile boolean mcpBusy;
     private boolean mcpForeground;
     private long mcpBackgroundUntilElapsed;
@@ -128,10 +134,14 @@ public class EditorActivity extends Activity {
                 return;
             }
 
+            // Heartbeats are not document edits. Do not replace progress or unsaved edits.
+            String command = McpBridgeStore.getLastCommandId(EditorActivity.this);
+            if (command.isEmpty() || command.equals(getLastAppliedMcpCommand())) return;
             List<TextOverlay> updated = McpBridgeStore.loadOverlays(
                     EditorActivity.this, jobId);
             overlays.clear();
             overlays.addAll(updated);
+            rememberAppliedMcpCommand(command);
             saveDraft(true);
             renderCurrentPage();
             tvPosition.setText("ChatGPT a mis à jour le document • contrôle visuel synchronisé.");
@@ -167,6 +177,9 @@ public class EditorActivity extends Activity {
 
                     if (mcpJobId == null || mcpJobId.isEmpty()) {
                         autoQueueOrFetchChatGpt();
+                    } else if (!contextReady
+                            && SystemClock.elapsedRealtime() >= contextRetryAfter) {
+                        syncInboundDocumentContext();
                     } else if (!serviceOwnsJob) {
                         fetchChatGptResult(endpoint, token, false);
                     }
@@ -430,6 +443,11 @@ public class EditorActivity extends Activity {
                 detectedFieldsByPage.clear();
             }
             loadDraft();
+            if (!mcpJobId.isEmpty() && mcpJobId.equals(McpBridgeStore.getActiveJobId(this))) {
+                overlays.clear();
+                overlays.addAll(McpBridgeStore.loadOverlays(this, mcpJobId));
+                rememberAppliedMcpCommand(McpBridgeStore.getLastCommandId(this));
+            }
             if (clearLegacyMcpOverlaysAfterDraftLoad) {
                 overlays.clear();
                 clearLegacyMcpOverlaysAfterDraftLoad = false;
@@ -443,7 +461,7 @@ public class EditorActivity extends Activity {
             if (inboundNeedsContextSync) {
                 syncInboundDocumentContext();
             } else if (mcpJobId != null && !mcpJobId.isEmpty()) {
-                ensurePersistentMcpBridge();
+                syncInboundDocumentContext();
             } else {
                 autoQueueOrFetchChatGpt();
             }
@@ -627,6 +645,10 @@ public class EditorActivity extends Activity {
     }
 
     private void redetectCurrentPage() {
+        if (contextSyncInProgress) {
+            Toast.makeText(this, "Préparation ChatGPT en cours…", Toast.LENGTH_SHORT).show();
+            return;
+        }
         if (getPageCountSafe() <= 0) {
             Toast.makeText(this, "Choisissez d’abord un PDF", Toast.LENGTH_SHORT).show();
             return;
@@ -635,6 +657,8 @@ public class EditorActivity extends Activity {
             detectedFieldsByPage.remove(pageIndex);
         }
         detectFieldsOnNextRender = true;
+        contextReady = false;
+        contextRetryAfter = 0L;
         tvFieldStatus.setText("Analyse optionnelle…");
         renderCurrentPage();
     }
@@ -660,7 +684,8 @@ public class EditorActivity extends Activity {
     }
 
     private void autoQueueOrFetchChatGpt() {
-        if (getPageCountSafe() <= 0 || sourceUri == null || mcpBusy) return;
+        if (getPageCountSafe() <= 0 || sourceUri == null || mcpBusy
+                || SystemClock.elapsedRealtime() < contextRetryAfter) return;
 
         SharedPreferences settings = getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE);
         String endpoint = settings.getString("mcpUrl", "").trim();
@@ -691,58 +716,55 @@ public class EditorActivity extends Activity {
         }
 
         mcpBusy = true;
-        tvPosition.setText("Analyse du PDF reçu de ChatGPT…");
+        contextReady = false;
+        contextSyncInProgress = true;
+        final int syncGeneration = contextGeneration;
+        final List<TextOverlay> overlaySnapshot = new ArrayList<>(overlays);
+        tvPosition.setText("Préparation des pages, repères et du profil pour ChatGPT…");
         final Uri uriSnapshot = sourceUri;
         final int pageCount = getPageCountSafe();
         final String jobId = mcpJobId;
 
         worker.execute(() -> {
             try {
+                if (destroyed || syncGeneration != contextGeneration) return;
                 JSONObject document = buildMcpDocumentContext(uriSnapshot, pageCount);
+                if (destroyed || syncGeneration != contextGeneration) return;
                 JSONObject profile = buildMcpProfile();
                 JSONArray fieldHints = buildMcpFieldHints(pageCount, document);
                 showMcpFieldCount(fieldHints.length());
 
+                if (destroyed || syncGeneration != contextGeneration) return;
                 McpBridgeStore.attachJob(
                         EditorActivity.this,
                         jobId,
                         uriSnapshot,
                         document.optString("name", "document.pdf"),
-                        new ArrayList<>(overlays));
+                        overlaySnapshot);
+                if (syncGeneration != contextGeneration) return;
                 startPersistentMcpBridgeService();
 
                 McpPageUploadResult uploads = uploadMcpPageImages(
-                        endpoint, token, jobId, pageCount);
+                        endpoint, token, jobId, pageCount, syncGeneration);
                 document.put("page_images_count", uploads.pages);
                 document.put("page_images_ready", uploads.pages == pageCount);
                 document.put("field_guides_count", uploads.guides);
                 document.put("field_guides_ready", uploads.guides == pageCount);
+                if (syncGeneration != contextGeneration) return;
 
                 McpClient.updateJobContext(endpoint, token, jobId,
                         document, profile, fieldHints,
                         (success, message) -> runOnUiThread(() -> {
-                            mcpBusy = false;
-                            inboundNeedsContextSync = false;
-                            if (destroyed || isFinishing() || !jobId.equals(mcpJobId)) return;
-
-                            if (success) {
-                                tvPosition.setText(uploads.pages == pageCount
-                                        ? "PDF reçu • pages visibles par ChatGPT."
-                                        : "PDF reçu • " + uploads.pages + "/" + pageCount
-                                        + " page(s) visuelle(s) synchronisée(s).");
-                                startPersistentMcpBridgeService();
-                            } else {
-                                tvPosition.setText(message);
-                            }
+                            if (destroyed || isFinishing() || syncGeneration != contextGeneration
+                                    || !jobId.equals(mcpJobId)) return;
+                            finishContextSync(success, message, uploads, pageCount, profile);
                         }));
             } catch (Exception e) {
                 AppLog.write(EditorActivity.this, "syncInboundContext", e);
                 runOnUiThread(() -> {
-                    mcpBusy = false;
-                    inboundNeedsContextSync = false;
-                    if (!destroyed && !isFinishing()) {
-                        tvPosition.setText("Analyse du PDF reçu impossible : " + safeMessage(e));
-                    }
+                    if (destroyed || syncGeneration != contextGeneration) return;
+                    finishContextSync(false, "Préparation interrompue : " + safeMessage(e),
+                            new McpPageUploadResult(0, 0), pageCount, new JSONObject());
                 });
             }
         });
@@ -754,6 +776,10 @@ public class EditorActivity extends Activity {
         // l'utilisateur revient immédiatement dans ChatGPT.
         startPersistentMcpBridgeService();
         mcpBusy = true;
+        contextReady = false;
+        contextSyncInProgress = true;
+        final int syncGeneration = contextGeneration;
+        final List<TextOverlay> overlaySnapshot = new ArrayList<>(overlays);
         tvPosition.setText("Préparation automatique du document pour ChatGPT…");
 
         final Uri uriSnapshot = sourceUri;
@@ -761,19 +787,22 @@ public class EditorActivity extends Activity {
 
         worker.execute(() -> {
             try {
+                if (destroyed || syncGeneration != contextGeneration) return;
                 JSONObject document = buildMcpDocumentContext(uriSnapshot, pageCount);
+                if (destroyed || syncGeneration != contextGeneration) return;
                 JSONObject profile = buildMcpProfile();
                 JSONArray fieldHints = buildMcpFieldHints(pageCount, document);
                 showMcpFieldCount(fieldHints.length());
 
                 runOnUiThread(() -> tvPosition.setText("Envoi sécurisé vers ChatGPT…"));
 
+                if (destroyed || syncGeneration != contextGeneration) return;
                 McpClient.createJob(endpoint, token, document, profile, fieldHints,
                         new McpClient.JobCallback() {
                             @Override
                             public void onCreated(String jobId, String status) {
                                 runOnUiThread(() -> {
-                                    if (destroyed || isFinishing()) return;
+                                    if (destroyed || isFinishing() || syncGeneration != contextGeneration) return;
                                     mcpJobId = jobId;
                                     persistMcpJob();
                                     tvPosition.setText("Document envoyé • préparation des pages visuelles pour ChatGPT…");
@@ -781,49 +810,38 @@ public class EditorActivity extends Activity {
 
                                 worker.execute(() -> {
                                     try {
+                                        if (destroyed || syncGeneration != contextGeneration) return;
                                         McpBridgeStore.attachJob(
                                                 EditorActivity.this,
                                                 jobId,
                                                 uriSnapshot,
                                                 document.optString("name", "document.pdf"),
-                                                new ArrayList<>(overlays));
+                                                overlaySnapshot);
                                         startPersistentMcpBridgeService();
 
                                         McpPageUploadResult uploads = uploadMcpPageImages(
-                                                endpoint, token, jobId, pageCount);
+                                                endpoint, token, jobId, pageCount, syncGeneration);
                                         document.put("page_images_count", uploads.pages);
                                         document.put("page_images_ready", uploads.pages == pageCount);
                                         document.put("field_guides_count", uploads.guides);
                                         document.put("field_guides_ready", uploads.guides == pageCount);
+                                        if (destroyed || syncGeneration != contextGeneration) return;
 
                                         McpClient.updateJobContext(endpoint, token, jobId,
                                                 document, profile, fieldHints,
                                                 (success, message) -> runOnUiThread(() -> {
-                                                    mcpBusy = false;
                                                     if (destroyed || isFinishing()
+                                                            || syncGeneration != contextGeneration
                                                             || !jobId.equals(mcpJobId)) return;
-
-                                                    if (success) {
-                                                        tvPosition.setText(uploads.pages == pageCount
-                                                                ? "Document prêt • ChatGPT peut voir toutes les pages."
-                                                                : "Document prêt • " + uploads.pages + "/"
-                                                                + pageCount + " page(s) visuelle(s) disponibles.");
-                                                        Toast.makeText(EditorActivity.this,
-                                                                "Document disponible dans ChatGPT",
-                                                                Toast.LENGTH_LONG).show();
-                                                    } else {
-                                                        tvPosition.setText(message);
-                                                    }
+                                                    finishContextSync(success, message, uploads, pageCount, profile);
                                                 }));
                                     } catch (Exception e) {
                                         AppLog.write(EditorActivity.this,
                                                 "uploadMcpPageImages", e);
                                         runOnUiThread(() -> {
-                                            mcpBusy = false;
-                                            if (!destroyed && !isFinishing()) {
-                                                tvPosition.setText("Document envoyé, mais pages visuelles incomplètes : "
-                                                        + safeMessage(e));
-                                            }
+                                            if (destroyed || syncGeneration != contextGeneration) return;
+                                            finishContextSync(false, "Envoi interrompu : " + safeMessage(e),
+                                                    new McpPageUploadResult(0, 0), pageCount, profile);
                                         });
                                     }
                                 });
@@ -831,15 +849,50 @@ public class EditorActivity extends Activity {
 
                             @Override
                             public void onError(String message) {
-                                runOnUiThread(() -> finishMcpError(message));
+                                runOnUiThread(() -> {
+                                    if (syncGeneration != contextGeneration || destroyed) return;
+                                    contextSyncInProgress = false;
+                                    contextRetryAfter = SystemClock.elapsedRealtime() + 15_000L;
+                                    finishMcpError(message);
+                                });
                             }
                         });
             } catch (Exception e) {
                 AppLog.write(this, "prepareMcpDocument", e);
-                runOnUiThread(() -> finishMcpError(
-                        "Préparation ChatGPT impossible : " + safeMessage(e)));
+                runOnUiThread(() -> {
+                    if (syncGeneration != contextGeneration || destroyed) return;
+                    contextSyncInProgress = false;
+                    contextRetryAfter = SystemClock.elapsedRealtime() + 15_000L;
+                    finishMcpError("Préparation ChatGPT impossible : " + safeMessage(e));
+                });
             }
         });
+    }
+
+    private void finishContextSync(boolean success, String message, McpPageUploadResult uploads,
+                                   int pageCount, JSONObject profile) {
+        mcpBusy = false;
+        contextSyncInProgress = false;
+        contextReady = success && pageCount > 0
+                && uploads.pages == pageCount && uploads.guides == pageCount;
+        inboundNeedsContextSync = !contextReady;
+        contextRetryAfter = contextReady ? 0L : SystemClock.elapsedRealtime() + 15_000L;
+        if (contextReady) {
+            syncedProfile = profile.toString();
+            tvPosition.setText("Document prêt • " + pageCount + " page(s) et guides transmis"
+                    + (profile.length() == 0 ? " • profil vide : données à préciser dans ChatGPT."
+                    : " • profil transmis."));
+            startPersistentMcpBridgeService();
+            if (openChatGptWhenReady && mcpForeground) {
+                openChatGptWhenReady = false;
+                openChatGptAssistant();
+            }
+        } else {
+            tvPosition.setText("Synchronisation incomplète • " + uploads.pages + "/" + pageCount
+                    + " pages, " + uploads.guides + "/" + pageCount
+                    + " guides • nouvelle tentative automatique. " + (success ? "" : message));
+        }
+        refreshMcpStatusUi();
     }
 
     private void ensurePersistentMcpBridge() {
@@ -902,15 +955,9 @@ public class EditorActivity extends Activity {
             return;
         }
 
-        File bridgeSource = McpBridgeStore.getSourceFile(this, mcpJobId);
-        if (bridgeSource == null || !bridgeSource.isFile()) {
-            ensurePersistentMcpBridge();
-            return;
-        }
-
-        stopService(new Intent(this, McpBridgeService.class));
-        McpBridgeState.setRunning(this, false);
-        mcpHandler.postDelayed(this::startPersistentMcpBridgeService, 250L);
+        if (mcpBusy) return;
+        contextRetryAfter = 0L;
+        syncInboundDocumentContext();
     }
 
     private void openChatGptAssistant() {
@@ -927,16 +974,17 @@ public class EditorActivity extends Activity {
             return;
         }
 
-        if (mcpJobId == null || mcpJobId.isEmpty()) {
-            tvPosition.setText("Préparation du PDF pour ChatGPT…");
-            autoQueueOrFetchChatGpt();
-            Toast.makeText(this,
-                    "Le PDF se synchronise. Ouvrez ChatGPT dès que le pont indique PRÊT.",
-                    Toast.LENGTH_LONG).show();
+        if (mcpBusy || !contextReady) {
+            openChatGptWhenReady = true;
+            tvPosition.setText("Préparation du PDF • ChatGPT s’ouvrira après la synchronisation complète.");
+            if (!mcpBusy) {
+                contextRetryAfter = 0L;
+                if (mcpJobId == null || mcpJobId.isEmpty()) autoQueueOrFetchChatGpt();
+                else syncInboundDocumentContext();
+            }
             return;
         }
 
-        ensurePersistentMcpBridge();
         startPersistentMcpBridgeService();
 
         String prompt = "@Remplissage auto documents ouvre exactement le document job_id "
@@ -970,6 +1018,10 @@ public class EditorActivity extends Activity {
     private void refreshMcpStatusUi() {
         if (tvChatGptStatus == null) return;
         String text = McpBridgeState.oneLine(this);
+        if (sourceUri != null && !contextReady) {
+            text = contextSyncInProgress ? "ChatGPT : préparation des pages et repères…"
+                    : "ChatGPT : document incomplet • synchronisation à reprendre";
+        }
         tvChatGptStatus.setText(text);
 
         McpBridgeState.Snapshot snapshot = McpBridgeState.read(this);
@@ -992,11 +1044,12 @@ public class EditorActivity extends Activity {
     }
 
     private McpPageUploadResult uploadMcpPageImages(String endpoint, String token,
-                                                    String jobId, int pageCount) {
+                                                    String jobId, int pageCount, int uploadGeneration) {
         int uploadedPages = 0;
         int uploadedGuides = 0;
 
         for (int i = 0; i < pageCount; i++) {
+            if (destroyed || uploadGeneration != contextGeneration) break;
             Bitmap renderedBitmap = null;
             Bitmap uploadBitmap = null;
             Bitmap guideBitmap = null;
@@ -1006,12 +1059,14 @@ public class EditorActivity extends Activity {
                 uploadBitmap = scaleForMcpVision(renderedBitmap, 1600);
 
                 byte[] jpeg = encodeMcpJpeg(uploadBitmap);
+                if (destroyed || uploadGeneration != contextGeneration) break;
                 McpClient.uploadPageImageBlocking(
                         endpoint, token, jobId, i, jpeg);
                 uploadedPages++;
 
                 List<FormField> fields = fieldsForPage(i);
-                if (!fields.isEmpty()) {
+                {
+                    // Even a page without fields has a guide; zero fields is not an upload failure.
                     try {
                         guideBitmap = drawMcpFieldGuide(uploadBitmap, i, fields);
                         byte[] guideJpeg = encodeMcpJpeg(guideBitmap);
@@ -1991,6 +2046,7 @@ public class EditorActivity extends Activity {
                 String text = item.optString("text", "");
                 if (text.length() > 5000) continue;
                 restored.add(new TextOverlay(
+                        item.optString("overlay_id", ""),
                         Math.max(0, item.optInt("page", 0)),
                         clamp01((float) item.optDouble("x", 0.1)),
                         clamp01((float) item.optDouble("y", 0.1)),
@@ -1999,7 +2055,8 @@ public class EditorActivity extends Activity {
                         TextOverlay.normalizeAlign(item.optString("align", TextOverlay.ALIGN_LEFT)),
                         TextOverlay.normalizeKind(item.optString("kind", TextOverlay.KIND_TEXT)),
                         clamp01((float) item.optDouble("width", 0.0)),
-                        clamp01((float) item.optDouble("height", 0.0))
+                        clamp01((float) item.optDouble("height", 0.0)),
+                        item.optString("data_state", TextOverlay.STATE_KNOWN)
                 ));
             }
             overlays.clear();
@@ -2017,6 +2074,8 @@ public class EditorActivity extends Activity {
             JSONArray array = new JSONArray();
             for (TextOverlay overlay : overlays) {
                 JSONObject item = new JSONObject();
+                item.put("overlay_id", overlay.overlayId);
+                item.put("data_state", overlay.dataState);
                 item.put("page", overlay.pageIndex);
                 item.put("x", overlay.x);
                 item.put("y", overlay.y);
@@ -2259,6 +2318,19 @@ public class EditorActivity extends Activity {
             renderCurrentPage();
         }
 
+        try {
+            if (contextReady && !syncedProfile.equals(buildMcpProfile().toString())) {
+                contextReady = false;
+                contextRetryAfter = 0L;
+            }
+        } catch (Exception error) {
+            AppLog.write(this, "profileSyncCheck", error);
+        }
+        if (openChatGptWhenReady && contextReady && !mcpBusy) {
+            openChatGptWhenReady = false;
+            openChatGptAssistant();
+        }
+
         mcpHandler.removeCallbacks(mcpPollRunnable);
         mcpHandler.removeCallbacks(mcpStatusUiRunnable);
         mcpHandler.post(mcpPollRunnable);
@@ -2333,6 +2405,12 @@ public class EditorActivity extends Activity {
             }
         }
         if (pdfView != null) pdfView.setPage(null, null);
+        contextGeneration++;
+        contextReady = false;
+        contextSyncInProgress = false;
+        contextRetryAfter = 0L;
+        openChatGptWhenReady = false;
+        inboundNeedsContextSync = false;
         sourceUri = null;
         draftKey = null;
         mcpJobId = "";
