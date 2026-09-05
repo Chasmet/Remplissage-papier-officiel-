@@ -101,6 +101,7 @@ public class EditorActivity extends Activity {
     private String pendingInboundJobId = "";
     private String currentDocumentNameOverride = "";
     private boolean inboundNeedsContextSync = false;
+    private boolean clearLegacyMcpOverlaysAfterDraftLoad = false;
     private volatile boolean mcpBusy;
     private boolean mcpForeground;
     private long mcpBackgroundUntilElapsed;
@@ -429,6 +430,12 @@ public class EditorActivity extends Activity {
                 detectedFieldsByPage.clear();
             }
             loadDraft();
+            if (clearLegacyMcpOverlaysAfterDraftLoad) {
+                overlays.clear();
+                clearLegacyMcpOverlaysAfterDraftLoad = false;
+                saveDraft(true);
+                tvPosition.setText("Ancien remplissage ChatGPT effacé • synchronisation précise en cours…");
+            }
             int count = getPageCountSafe();
             if (requestedPage >= 0) pageIndex = requestedPage;
             pageIndex = Math.max(0, Math.min(pageIndex, Math.max(0, count - 1)));
@@ -1789,11 +1796,40 @@ public class EditorActivity extends Activity {
         }
 
         SharedPreferences prefs = getSharedPreferences(DRAFT_PREFS, MODE_PRIVATE);
-        // Preserve a still-valid pending/ready command across an in-place app update.
-        // The server validates expiry/session ownership; a stale/cancelled job is replaced
-        // automatically after the first synchronization attempt.
-        mcpJobId = prefs.getString(draftKey + MCP_JOB_SUFFIX, "");
+        String savedJobId = prefs.getString(draftKey + MCP_JOB_SUFFIX, "");
+        String savedVersion = prefs.getString(draftKey + MCP_JOB_VERSION_SUFFIX, "");
+        boolean exactAnchorMigration = savedJobId != null && !savedJobId.isEmpty()
+                && requiresExactAnchorMigration(savedVersion);
+        if (exactAnchorMigration) {
+            clearLegacyMcpOverlaysAfterDraftLoad = !prefs.getString(
+                    draftKey + MCP_COMMAND_SUFFIX, "").isEmpty();
+            prefs.edit()
+                    .remove(draftKey + MCP_JOB_SUFFIX)
+                    .remove(draftKey + MCP_JOB_VERSION_SUFFIX)
+                    .remove(draftKey + MCP_COMMAND_SUFFIX)
+                    .apply();
+            mcpJobId = "";
+            AppLog.write(this,
+                    "MCP_MIGRATION ancien job sans ancrage supprimé • version=" + savedVersion,
+                    null);
+            return;
+        }
+
+        // Les jobs créés par le protocole d'ancrage exact survivent aux mises à jour suivantes.
+        mcpJobId = savedJobId;
         if (mcpJobId == null) mcpJobId = "";
+    }
+
+    private static boolean requiresExactAnchorMigration(String savedVersion) {
+        if (savedVersion == null || savedVersion.trim().isEmpty()) return true;
+        String[] parts = savedVersion.trim().split("\\.");
+        try {
+            int major = parts.length > 0 ? Integer.parseInt(parts[0]) : 0;
+            int minor = parts.length > 1 ? Integer.parseInt(parts[1]) : 0;
+            return major < 1 || (major == 1 && minor < 12);
+        } catch (NumberFormatException ignored) {
+            return true;
+        }
     }
 
     private void persistMcpJob() {

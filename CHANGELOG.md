@@ -1,5 +1,11 @@
 # Historique des versions
 
+## 1.12.1
+
+- Migration automatique des brouillons créés avant l’ancrage exact.
+- Suppression du lien MCP ancien et des overlays ChatGPT déjà mal positionnés lors de la première ouverture après mise à jour.
+- Resynchronisation immédiate du PDF avec les nouveaux repères, sans demander à l’utilisateur d’effacer manuellement l’ancien résultat.
+
 ## 1.12.0
 
 - Détection automatique des lignes, cases et zones de saisie lors de la synchronisation ChatGPT.
