@@ -10,7 +10,7 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
 
 const FUNCTION_SLUG = "remplissage-papier-mcp";
 const PROTOCOL_VERSION = "2025-06-18";
-const SERVER_VERSION = "5.2.0";
+const SERVER_VERSION = "5.2.1";
 const PDF_BUCKET = "remplissage-mcp-pdfs";
 const PAGE_BUCKET = "remplissage-mcp-pages";
 const MAX_PAGE_IMAGE_BYTES = 1_500_000;
@@ -105,11 +105,33 @@ async function getSession(req: Request) {
   const tokenHash = await sha256Hex(token);
   const { data, error } = await supabase.from("remplissage_mcp_sessions")
     .select("id,revoked,expires_at").eq("token_hash", tokenHash).maybeSingle();
-  if (error || !data || data.revoked) return null;
-  if (new Date(data.expires_at).getTime() <= Date.now()) return null;
+  if (error) return null;
+  let session = data;
+  let clientTokenHash: string | null = null;
+  if (!session) {
+    const { data: client, error: clientError } = await supabase
+      .from("remplissage_mcp_client_tokens")
+      .select("session_id,revoked,expires_at")
+      .eq("token_hash", tokenHash).maybeSingle();
+    if (clientError || !client || client.revoked ||
+        new Date(client.expires_at).getTime() <= Date.now()) return null;
+    const { data: parent, error: parentError } = await supabase
+      .from("remplissage_mcp_sessions")
+      .select("id,revoked,expires_at")
+      .eq("id", client.session_id).maybeSingle();
+    if (parentError || !parent) return null;
+    session = parent;
+    clientTokenHash = tokenHash;
+  }
+  if (session.revoked || new Date(session.expires_at).getTime() <= Date.now()) return null;
+  const now = new Date().toISOString();
+  if (clientTokenHash) {
+    await supabase.from("remplissage_mcp_client_tokens")
+      .update({ last_seen_at: now }).eq("token_hash", clientTokenHash);
+  }
   await supabase.from("remplissage_mcp_sessions")
-    .update({ last_seen_at: new Date().toISOString() }).eq("id", data.id);
-  return { id: data.id as string, token };
+    .update({ last_seen_at: now }).eq("id", session.id);
+  return { id: session.id as string, token };
 }
 
 function activeCutoffIso() {

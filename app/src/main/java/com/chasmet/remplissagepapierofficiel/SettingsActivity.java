@@ -356,10 +356,12 @@ public class SettingsActivity extends Activity {
         SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
         etMcpUrl.setText(p.getString("mcpUrl", ""));
         etMcpToken.setText(p.getString("mcpToken", ""));
-        if (!p.getString("mcpUrl", "").isEmpty()) {
-            tvMcpStatus.setText("MCP configuré. Testez la connexion.");
-        } else {
+        if (p.getString("mcpUrl", "").isEmpty()) {
             tvMcpStatus.setText("MCP non configuré.");
+        } else if (p.getString("mcpToken", "").trim().length() < 32) {
+            tvMcpStatus.setText("Jeton Android manquant. Collez-le puis enregistrez et testez la connexion.");
+        } else {
+            tvMcpStatus.setText("MCP configuré. Testez la connexion.");
         }
     }
 
