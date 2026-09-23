@@ -1,5 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 import { anchorPlacementsToFields } from "./placement-anchoring.ts";
+import { sessionTokenFromRequest } from "./session-auth.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -98,36 +99,15 @@ async function sha256Hex(value: string) {
   return Array.from(digest).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-function tokenFromRequest(req: Request) {
-  const url = new URL(req.url);
-  return (url.searchParams.get("session") || req.headers.get("x-remplissage-session") || "").trim();
-}
-
 async function getSession(req: Request) {
-  const token = tokenFromRequest(req);
-  if (!token) {
-    const { data, error } = await supabase
-      .from("remplissage_mcp_sessions")
-      .select("id,revoked,expires_at")
-      .eq("label", "Android principal")
-      .eq("revoked", false)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (error || !data) return null;
-    if (new Date(data.expires_at).getTime() <= Date.now()) return null;
-    void supabase.from("remplissage_mcp_sessions")
-      .update({ last_seen_at: new Date().toISOString() }).eq("id", data.id);
-    return { id: data.id as string, token: "" };
-  }
-
-  if (token.length < 32 || token.length > 256) return null;
+  const token = sessionTokenFromRequest(req);
+  if (!token) return null;
   const tokenHash = await sha256Hex(token);
   const { data, error } = await supabase.from("remplissage_mcp_sessions")
     .select("id,revoked,expires_at").eq("token_hash", tokenHash).maybeSingle();
   if (error || !data || data.revoked) return null;
   if (new Date(data.expires_at).getTime() <= Date.now()) return null;
-  void supabase.from("remplissage_mcp_sessions")
+  await supabase.from("remplissage_mcp_sessions")
     .update({ last_seen_at: new Date().toISOString() }).eq("id", data.id);
   return { id: data.id as string, token };
 }
@@ -1458,7 +1438,7 @@ async function handleMcp(req: Request, body: Record<string, any>) {
   const method = String(body.method ?? "");
   const session = await getSession(req);
   if (!session) return rpcError(id, -32001, "Session Remplissage Papier invalide ou expirée");
-  void supabase.from("remplissage_mcp_sessions")
+  await supabase.from("remplissage_mcp_sessions")
     .update({ chatgpt_last_seen_at: new Date().toISOString() }).eq("id", session.id);
 
   if (method === "initialize") {

@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Bundle;
+import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ProgressBar;
@@ -43,6 +44,7 @@ public class SettingsActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_settings);
+        SystemBarInsets.apply(this);
 
         TextView tvVersion = findViewById(R.id.tvVersion);
         tvUpdateStatus = findViewById(R.id.tvUpdateStatus);
@@ -65,22 +67,28 @@ public class SettingsActivity extends Activity {
         tvVersion.setText("Version installée : " + BuildConfig.VERSION_NAME + " (" + BuildConfig.VERSION_CODE + ")");
         loadMcpSettings();
 
-        downloadedApk = UpdateManager.getUpdateFile(this);
-        validateExistingDownload();
-        showInstallStatus();
-        updateDiagnostics();
+        if (BuildConfig.SIDELOAD_UPDATES) {
+            downloadedApk = UpdateManager.getUpdateFile(this);
+            validateExistingDownload();
+            showInstallStatus();
+            updateDiagnostics();
+        } else {
+            findViewById(R.id.updatePanel).setVisibility(View.GONE);
+        }
 
         findViewById(R.id.btnBackupData).setOnClickListener(v -> requestBackupDestination());
         findViewById(R.id.btnRestoreData).setOnClickListener(v -> requestBackupSource());
-        btnCheckUpdate.setOnClickListener(v -> checkUpdate());
-        btnDownloadUpdate.setOnClickListener(v -> downloadUpdate());
-        btnInstallUpdate.setOnClickListener(v -> installUpdate());
+        if (BuildConfig.SIDELOAD_UPDATES) {
+            btnCheckUpdate.setOnClickListener(v -> checkUpdate());
+            btnDownloadUpdate.setOnClickListener(v -> downloadUpdate());
+            btnInstallUpdate.setOnClickListener(v -> installUpdate());
+        }
         findViewById(R.id.btnSaveMcp).setOnClickListener(v -> saveMcpSettings());
         findViewById(R.id.btnTestMcp).setOnClickListener(v -> testMcp());
         findViewById(R.id.btnMcpDiagnostics).setOnClickListener(v ->
                 startActivity(new Intent(this, DiagnosticsActivity.class)));
 
-        checkUpdate();
+        if (BuildConfig.SIDELOAD_UPDATES) checkUpdate();
     }
 
     @Override
@@ -93,13 +101,16 @@ public class SettingsActivity extends Activity {
     protected void onResume() {
         super.onResume();
         installationOpening = false;
-        downloadedApk = UpdateManager.getUpdateFile(this);
-        showInstallStatus();
-        updateDiagnostics();
-        refreshUpdateButtons();
+        if (BuildConfig.SIDELOAD_UPDATES) {
+            downloadedApk = UpdateManager.getUpdateFile(this);
+            showInstallStatus();
+            updateDiagnostics();
+            refreshUpdateButtons();
+        }
         refreshBridgeStatus();
 
-        if (pendingInstallAfterPermission && UpdateManager.canInstallPackages(this)) {
+        if (BuildConfig.SIDELOAD_UPDATES && pendingInstallAfterPermission
+                && UpdateManager.canInstallPackages(this)) {
             pendingInstallAfterPermission = false;
             tvUpdateStatus.setText("Autorisation accordée. Préparation de la session d’installation Android…");
             installUpdate();
@@ -115,7 +126,7 @@ public class SettingsActivity extends Activity {
         if (requestCode == REQ_CREATE_BACKUP) {
             try {
                 DataBackupManager.write(this, uri);
-                tvBackupStatus.setText("Sauvegarde créée. Gardez ce fichier : il permet de restaurer profil et brouillons après une réinstallation.");
+                tvBackupStatus.setText("Sauvegarde créée. Conservez ce fichier privé et gardez vos PDF d’origine séparément. Après réinstallation, les brouillons liés à un ancien emplacement de fichier peuvent ne pas se rouvrir automatiquement.");
                 Toast.makeText(this, "Sauvegarde terminée", Toast.LENGTH_SHORT).show();
             } catch (Exception e) {
                 AppLog.write(this, "backupData", e);
@@ -129,8 +140,8 @@ public class SettingsActivity extends Activity {
             try {
                 DataBackupManager.RestoreResult result = DataBackupManager.restore(this, uri);
                 loadMcpSettings();
-                tvBackupStatus.setText("Restauration terminée : " + result.profileItems
-                        + " éléments de profil et " + result.draftItems + " éléments de brouillons restaurés.");
+                tvBackupStatus.setText("Données restaurées : " + result.profileItems
+                        + " éléments de profil et " + result.draftItems + " éléments de brouillons. Réimportez les PDF d’origine ; les brouillons peuvent dépendre de leur ancien emplacement.");
                 Toast.makeText(this, "Données restaurées", Toast.LENGTH_SHORT).show();
             } catch (Exception e) {
                 AppLog.write(this, "restoreData", e);
@@ -359,6 +370,10 @@ public class SettingsActivity extends Activity {
             Toast.makeText(this, "Utilisez une URL MCP HTTPS", Toast.LENGTH_LONG).show();
             return;
         }
+        if (!url.isEmpty() && token.length() < 32) {
+            tvMcpStatus.setText("Un jeton de session d’au moins 32 caractères est nécessaire.");
+            return;
+        }
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putString("mcpUrl", url)
                 .putString("mcpToken", token)
@@ -371,6 +386,10 @@ public class SettingsActivity extends Activity {
         String token = etMcpToken.getText().toString().trim();
         if (url.isEmpty()) {
             tvMcpStatus.setText("Renseignez l’URL du serveur MCP.");
+            return;
+        }
+        if (token.length() < 32) {
+            tvMcpStatus.setText("Saisissez d’abord le jeton de session MCP.");
             return;
         }
         tvMcpStatus.setText("Test MCP en cours…");

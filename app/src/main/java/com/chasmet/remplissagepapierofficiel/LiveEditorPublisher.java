@@ -66,6 +66,14 @@ public final class LiveEditorPublisher {
         AppLog.write(app, "LIVE_EDITOR démarré", null);
     }
 
+    public static void stop() {
+        ScheduledExecutorService current = scheduler;
+        scheduler = null;
+        if (current != null) current.shutdownNow();
+        lastFingerprint = "";
+        STARTED.set(false);
+    }
+
     private static void publishSafely(Context context) {
         if (!RUNNING.compareAndSet(false, true)) return;
         try {
@@ -89,7 +97,7 @@ public final class LiveEditorPublisher {
         String token = settings.getString("mcpToken", "");
         endpoint = endpoint == null ? "" : endpoint.trim();
         token = token == null ? "" : token.trim();
-        if (!endpoint.startsWith("https://")) return;
+        if (!endpoint.startsWith("https://") || token.length() < 32) return;
 
         List<TextOverlay> overlays = McpBridgeStore.loadOverlays(context, jobId);
         String commandId = McpBridgeStore.getLastCommandId(context);

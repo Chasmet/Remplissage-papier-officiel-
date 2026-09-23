@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Bundle;
+import android.graphics.pdf.PdfDocument;
 import android.widget.Button;
 import android.widget.Toast;
 
@@ -15,6 +16,8 @@ import androidx.core.content.FileProvider;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
 
 public class MainActivity extends Activity {
     private static final String SETTINGS_PREFS = "settings";
@@ -22,6 +25,7 @@ public class MainActivity extends Activity {
     private static final String LAST_OPENED_CHAT_JOB = "last_opened_chat_job";
     private static final String LAST_OPENED_CHAT_NAME = "last_opened_chat_name";
     private static final String LAST_OPENED_CHAT_PATH = "last_opened_chat_path";
+    static final String LAST_DOCUMENT_URI = "last_document_uri";
 
     private boolean updateDialogShown = false;
     private boolean inboxCheckRunning = false;
@@ -30,6 +34,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        SystemBarInsets.apply(this);
 
         Button btnNewDocument = findViewById(R.id.btnNewDocument);
         Button btnImportPdf = findViewById(R.id.btnImportPdf);
@@ -37,13 +42,14 @@ public class MainActivity extends Activity {
         Button btnProfile = findViewById(R.id.btnProfile);
         Button btnSettings = findViewById(R.id.btnSettings);
 
-        btnNewDocument.setOnClickListener(v -> startActivity(new Intent(this, EditorActivity.class)));
-        btnImportPdf.setOnClickListener(v -> startActivity(new Intent(this, EditorActivity.class)));
-        btnDocuments.setOnClickListener(v -> openLastChatGptDocumentOrCheckInbox());
+        btnNewDocument.setOnClickListener(v -> createBlankDocument());
+        btnImportPdf.setOnClickListener(v -> startActivity(new Intent(this, EditorActivity.class)
+                .putExtra(EditorActivity.EXTRA_PICK_PDF, true)));
+        btnDocuments.setOnClickListener(v -> openLastDocument());
         btnProfile.setOnClickListener(v -> startActivity(new Intent(this, ProfileActivity.class)));
         btnSettings.setOnClickListener(v -> startActivity(new Intent(this, SettingsActivity.class)));
 
-        checkForUpdateOnLaunch();
+        if (BuildConfig.SIDELOAD_UPDATES) checkForUpdateOnLaunch();
     }
 
     @Override
@@ -51,7 +57,9 @@ public class MainActivity extends Activity {
         super.onResume();
 
         String activeJob = McpBridgeStore.getActiveJobId(this);
-        if (activeJob != null && !activeJob.isEmpty()) {
+        if (activeJob != null && !activeJob.isEmpty()
+                && getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE)
+                        .getString("mcpToken", "").trim().length() >= 32) {
             try {
                 ContextCompat.startForegroundService(
                         this, new Intent(this, McpBridgeService.class));
@@ -69,7 +77,7 @@ public class MainActivity extends Activity {
         SharedPreferences settings = getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE);
         String endpoint = settings.getString("mcpUrl", "").trim();
         String token = settings.getString("mcpToken", "").trim();
-        if (endpoint.isEmpty()) return;
+        if (endpoint.isEmpty() || token.length() < 32) return;
 
         inboxCheckRunning = true;
         McpClient.getInbox(endpoint, token, new McpClient.InboxCallback() {
@@ -175,6 +183,52 @@ public class MainActivity extends Activity {
 
         Toast.makeText(this, "Recherche d’un document ChatGPT…", Toast.LENGTH_SHORT).show();
         checkChatGptInbox();
+    }
+
+    private void openLastDocument() {
+        String saved = getSharedPreferences(UI_PREFS, MODE_PRIVATE)
+                .getString(LAST_DOCUMENT_URI, "");
+        if (!saved.isEmpty()) {
+            try {
+                Uri uri = Uri.parse(saved);
+                try (android.os.ParcelFileDescriptor check =
+                             getContentResolver().openFileDescriptor(uri, "r")) {
+                    if (check == null) throw new IOException("Document introuvable");
+                }
+                startActivity(new Intent(this, EditorActivity.class).setData(uri)
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION));
+                return;
+            } catch (Exception e) {
+                getSharedPreferences(UI_PREFS, MODE_PRIVATE).edit()
+                        .remove(LAST_DOCUMENT_URI).apply();
+            }
+        }
+        openLastChatGptDocumentOrCheckInbox();
+    }
+
+    private void createBlankDocument() {
+        File directory = new File(getFilesDir(), "documents");
+        if (!directory.isDirectory() && !directory.mkdirs()) {
+            Toast.makeText(this, "Stockage indisponible", Toast.LENGTH_LONG).show();
+            return;
+        }
+        File file = new File(directory, "document-" + System.currentTimeMillis() + ".pdf");
+        try (PdfDocument pdf = new PdfDocument()) {
+            PdfDocument.Page page = pdf.startPage(new PdfDocument.PageInfo.Builder(595, 842, 1).create());
+            page.getCanvas().drawColor(android.graphics.Color.WHITE);
+            pdf.finishPage(page);
+            try (FileOutputStream output = new FileOutputStream(file)) {
+                pdf.writeTo(output);
+            }
+            Uri uri = FileProvider.getUriForFile(this,
+                    BuildConfig.APPLICATION_ID + ".fileprovider", file);
+            startActivity(new Intent(this, EditorActivity.class).setData(uri)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION));
+        } catch (Exception e) {
+            file.delete();
+            AppLog.write(this, "createBlankDocument", e);
+            Toast.makeText(this, "Impossible de créer le PDF", Toast.LENGTH_LONG).show();
+        }
     }
 
     private void checkForUpdateOnLaunch() {

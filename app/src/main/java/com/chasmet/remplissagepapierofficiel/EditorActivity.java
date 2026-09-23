@@ -58,6 +58,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class EditorActivity extends Activity {
     public static final String EXTRA_MCP_JOB_ID = "mcp_job_id";
     public static final String EXTRA_MCP_DOCUMENT_NAME = "mcp_document_name";
+    public static final String EXTRA_PICK_PDF = "pick_pdf";
 
     private static final int REQ_PICK_PDF = 100;
     private static final int REQ_CREATE_PDF = 101;
@@ -110,6 +111,7 @@ public class EditorActivity extends Activity {
     private volatile int contextGeneration;
     private volatile boolean mcpBusy;
     private boolean mcpForeground;
+    private boolean confirmedNewUpload;
     private long mcpBackgroundUntilElapsed;
     private boolean bridgeReceiverRegistered;
 
@@ -169,14 +171,14 @@ public class EditorActivity extends Activity {
                 SharedPreferences settings = getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE);
                 String endpoint = settings.getString("mcpUrl", "").trim();
                 String token = settings.getString("mcpToken", "").trim();
-                if (!endpoint.isEmpty()) {
+                if (!endpoint.isEmpty() && token.length() >= 32) {
                     String bridgeJob = McpBridgeStore.getActiveJobId(EditorActivity.this);
                     boolean serviceOwnsJob = mcpJobId != null
                             && !mcpJobId.isEmpty()
                             && mcpJobId.equals(bridgeJob);
 
                     if (mcpJobId == null || mcpJobId.isEmpty()) {
-                        autoQueueOrFetchChatGpt();
+                        // A local PDF stays on the device until the user explicitly syncs it.
                     } else if (!contextReady
                             && SystemClock.elapsedRealtime() >= contextRetryAfter) {
                         syncInboundDocumentContext();
@@ -287,6 +289,7 @@ public class EditorActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_editor);
+        SystemBarInsets.apply(this);
         PDFBoxResourceLoader.init(getApplicationContext());
 
         pdfView = findViewById(R.id.pdfView);
@@ -366,10 +369,14 @@ public class EditorActivity extends Activity {
             String inboundName = getIntent() == null
                     ? "" : getIntent().getStringExtra(EXTRA_MCP_DOCUMENT_NAME);
 
-            if (inboundUri != null && inboundJob != null && !inboundJob.trim().isEmpty()) {
-                pendingInboundJobId = inboundJob.trim();
-                currentDocumentNameOverride = inboundName == null ? "" : inboundName.trim();
+            if (inboundUri != null) {
+                if (inboundJob != null && !inboundJob.trim().isEmpty()) {
+                    pendingInboundJobId = inboundJob.trim();
+                    currentDocumentNameOverride = inboundName == null ? "" : inboundName.trim();
+                }
                 openPdf(inboundUri, null, -1);
+            } else if (getIntent() != null && getIntent().getBooleanExtra(EXTRA_PICK_PDF, false)) {
+                choosePdf();
             }
         }
     }
@@ -391,6 +398,7 @@ public class EditorActivity extends Activity {
     }
 
     private void openPdf(Uri uri, Intent data, int requestedPage) {
+        confirmedNewUpload = false;
         if (sourceUri != null && mcpJobId != null && !mcpJobId.isEmpty()) {
             McpBridgeStore.clearActiveJob(this, mcpJobId);
             stopService(new Intent(this, McpBridgeService.class));
@@ -426,6 +434,8 @@ public class EditorActivity extends Activity {
                 renderer = openedRenderer;
             }
             sourceUri = uri;
+            getSharedPreferences("mcp_ui", MODE_PRIVATE).edit()
+                    .putString(MainActivity.LAST_DOCUMENT_URI, uri.toString()).apply();
             draftKey = buildDraftKey(uri);
 
             if (pendingInboundJobId != null && !pendingInboundJobId.isEmpty()) {
@@ -463,7 +473,7 @@ public class EditorActivity extends Activity {
             } else if (mcpJobId != null && !mcpJobId.isEmpty()) {
                 syncInboundDocumentContext();
             } else {
-                autoQueueOrFetchChatGpt();
+                tvChatGptStatus.setText("ChatGPT : PDF local, synchronisation facultative");
             }
         } catch (Exception e) {
             AppLog.write(this, "openPdf", e);
@@ -691,8 +701,8 @@ public class EditorActivity extends Activity {
         String endpoint = settings.getString("mcpUrl", "").trim();
         String token = settings.getString("mcpToken", "").trim();
 
-        if (endpoint.isEmpty()) {
-            tvPosition.setText("Document chargé. Configurez le MCP dans Réglages pour le rendre disponible dans ChatGPT.");
+        if (endpoint.isEmpty() || token.length() < 32) {
+            tvPosition.setText("Document chargé. Configurez l’URL et le jeton MCP dans Réglages pour utiliser ChatGPT.");
             return;
         }
 
@@ -709,7 +719,7 @@ public class EditorActivity extends Activity {
         SharedPreferences settings = getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE);
         String endpoint = settings.getString("mcpUrl", "").trim();
         String token = settings.getString("mcpToken", "").trim();
-        if (endpoint.isEmpty()) {
+        if (endpoint.isEmpty() || token.length() < 32) {
             inboundNeedsContextSync = false;
             tvPosition.setText("PDF reçu de ChatGPT. Configurez le MCP dans Réglages.");
             return;
@@ -941,11 +951,13 @@ public class EditorActivity extends Activity {
 
         SharedPreferences settings = getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE);
         String endpoint = settings.getString("mcpUrl", "").trim();
-        if (endpoint.isEmpty()) {
+        if (endpoint.isEmpty() || settings.getString("mcpToken", "").trim().length() < 32) {
             tvChatGptStatus.setText("ChatGPT : MCP non configuré");
             Toast.makeText(this, "Configurez le MCP dans Réglages", Toast.LENGTH_LONG).show();
             return;
         }
+
+        if (confirmNewUpload(this::manualMcpSync)) return;
 
         AppLog.write(this, "MCP_SYNC bouton manuel", null);
         tvChatGptStatus.setText("ChatGPT : reconnexion et synchronisation…");
@@ -968,11 +980,13 @@ public class EditorActivity extends Activity {
 
         SharedPreferences settings = getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE);
         String endpoint = settings.getString("mcpUrl", "").trim();
-        if (endpoint.isEmpty()) {
+        if (endpoint.isEmpty() || settings.getString("mcpToken", "").trim().length() < 32) {
             tvChatGptStatus.setText("ChatGPT : MCP non configuré");
             Toast.makeText(this, "Configurez le MCP dans Réglages", Toast.LENGTH_LONG).show();
             return;
         }
+
+        if (confirmNewUpload(this::openChatGptAssistant)) return;
 
         if (mcpBusy || !contextReady) {
             openChatGptWhenReady = true;
@@ -1013,6 +1027,20 @@ public class EditorActivity extends Activity {
             AppLog.write(this, "openChatGpt.web", error);
             Toast.makeText(this, "Impossible d’ouvrir ChatGPT", Toast.LENGTH_LONG).show();
         }
+    }
+
+    private boolean confirmNewUpload(Runnable afterConsent) {
+        if (confirmedNewUpload || (mcpJobId != null && !mcpJobId.isEmpty())) return false;
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("Envoyer ce document à ChatGPT ?")
+                .setMessage("Le PDF, les images de ses pages et les informations enregistrées dans votre profil seront transmis au serveur de synchronisation pour préparer le remplissage.")
+                .setPositiveButton("ENVOYER", (dialog, which) -> {
+                    confirmedNewUpload = true;
+                    afterConsent.run();
+                })
+                .setNegativeButton("ANNULER", null)
+                .show();
+        return true;
     }
 
     private void refreshMcpStatusUi() {

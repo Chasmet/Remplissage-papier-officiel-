@@ -1,8 +1,8 @@
 #!/usr/bin/env sh
 set -eu
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-GRADLE_VERSION=8.7
-GRADLE_SHA256=544c35d6bd849ae8a5ed0bcea39ba677dc40f49df7d1835561582da2009b961d
+GRADLE_VERSION=8.11.1
+GRADLE_SHA256=f397b287023acdba1e9f6fc5ea72d22dd63669d59ed4a289a29b1a76eee151c6
 BOOT_DIR="$ROOT_DIR/.gradle-bootstrap"
 GRADLE_HOME="$BOOT_DIR/gradle-$GRADLE_VERSION"
 ZIP_FILE="$BOOT_DIR/gradle-$GRADLE_VERSION-bin.zip"

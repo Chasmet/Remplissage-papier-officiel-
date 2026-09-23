@@ -4,14 +4,26 @@ plugins {
 
 android {
     namespace 'com.chasmet.remplissagepapierofficiel'
-    compileSdk 34
+    compileSdk 36
 
     defaultConfig {
         applicationId 'com.chasmet.remplissagepapierofficiel'
         minSdk 21
-        targetSdk 34
-        versionCode 30
-        versionName '1.13.0'
+        targetSdk 36
+        versionCode 31
+        versionName '1.14.0'
+    }
+
+    flavorDimensions 'distribution'
+    productFlavors {
+        direct {
+            dimension 'distribution'
+            buildConfigField 'boolean', 'SIDELOAD_UPDATES', 'true'
+        }
+        play {
+            dimension 'distribution'
+            buildConfigField 'boolean', 'SIDELOAD_UPDATES', 'false'
+        }
     }
 
     signingConfigs {

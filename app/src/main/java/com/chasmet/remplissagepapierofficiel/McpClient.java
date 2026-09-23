@@ -54,7 +54,7 @@ public final class McpClient {
         EXECUTOR.execute(() -> {
             try {
                 JSONObject clientInfo = new JSONObject();
-                clientInfo.put("name", "Remplissage papier officiel");
+                clientInfo.put("name", "Remplissage PDF");
                 clientInfo.put("version", BuildConfig.VERSION_NAME);
 
                 JSONObject params = new JSONObject();

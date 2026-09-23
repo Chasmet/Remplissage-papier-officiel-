@@ -15,6 +15,7 @@ public class ProfileActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_profile);
+        SystemBarInsets.apply(this);
 
         firstName = findViewById(R.id.etFirstName);
         lastName = findViewById(R.id.etLastName);

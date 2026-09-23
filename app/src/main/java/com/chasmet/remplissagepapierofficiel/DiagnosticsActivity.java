@@ -16,6 +16,7 @@ public class DiagnosticsActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_diagnostics);
+        SystemBarInsets.apply(this);
 
         tvBridgeDiagnostic = findViewById(R.id.tvBridgeDiagnostic);
         tvLogs = findViewById(R.id.tvLogs);

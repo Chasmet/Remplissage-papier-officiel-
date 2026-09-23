@@ -1,7 +1,12 @@
-name: Build Android APK
+name: Build Android APK and Play bundle
 
 on:
   push:
+    branches: [ main ]
+    paths-ignore:
+      - 'supabase/**'
+      - '**/*.md'
+  pull_request:
     branches: [ main ]
     paths-ignore:
       - 'supabase/**'
@@ -59,7 +64,7 @@ jobs:
         run: |
           set +e
           chmod +x gradlew
-          ./gradlew clean testDebugUnitTest lintDebug assembleDebug
+          ./gradlew clean testDirectDebugUnitTest testPlayDebugUnitTest lintDirectDebug lintPlayDebug assembleDirectDebug assemblePlayDebug
           RESULT=$?
           if [ "$RESULT" -ne 0 ]; then
             echo "===== RAPPORT LINT COMPLET ====="
@@ -74,6 +79,7 @@ jobs:
           fi
 
       - name: Obtain permanent signing key
+        if: github.event_name != 'pull_request'
         shell: bash
         env:
           SIGNING_VAULT_URL: https://gflnvlolwqnvzxyqsrir.supabase.co/functions/v1/remplissage-signing-vault
@@ -112,19 +118,34 @@ jobs:
           chmod 600 "$RUNNER_TEMP/remplissage-release.jks" "$RUNNER_TEMP/remplissage-password.txt"
           rm -f "$RUNNER_TEMP/remplissage-vault.json"
 
-      - name: Build permanently signed Release APK
+      - name: Build signed direct APK and Play App Bundle
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
           export ANDROID_KEYSTORE_FILE="$RUNNER_TEMP/remplissage-release.jks"
           export ANDROID_KEYSTORE_PASSWORD="$(cat "$RUNNER_TEMP/remplissage-password.txt")"
-          ./gradlew assembleRelease
+          ./gradlew assembleDirectRelease assemblePlayRelease bundlePlayRelease
 
-      - name: Verify permanent signer
+      - name: Verify Play variant cannot install APKs
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
-          APK="app/build/outputs/apk/release/app-release.apk"
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
+          if [ -z "$AAPT" ]; then echo "aapt introuvable"; exit 1; fi
+          "$AAPT" dump permissions app/build/outputs/apk/play/release/app-play-release.apk > "$RUNNER_TEMP/play-permissions.txt"
+          if grep -q 'android.permission.REQUEST_INSTALL_PACKAGES' "$RUNNER_TEMP/play-permissions.txt"; then
+            echo "Permission d’installation d’APK interdite dans la variante Play"
+            exit 1
+          fi
+
+      - name: Verify permanent signer
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/direct/release/app-direct-release.apk"
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
           if [ -z "$APKSIGNER" ]; then
             echo "apksigner introuvable"
@@ -149,18 +170,20 @@ jobs:
           echo "Signature permanente vérifiée: $ACTUAL"
 
       - name: Prepare signed APK
+        if: github.event_name != 'pull_request'
         id: apk
         shell: bash
         run: |
           set -euo pipefail
           APK="Remplissage-papier-officiel-v${{ steps.version.outputs.version }}.apk"
-          cp app/build/outputs/apk/release/app-release.apk "$APK"
+          cp app/build/outputs/apk/direct/release/app-direct-release.apk "$APK"
           SHA=$(sha256sum "$APK" | awk '{print $1}')
           echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
           echo "$SHA  $APK" > "$APK.sha256"
           echo "APK SHA-256: $SHA"
 
       - name: Upload signed APK artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: Remplissage-papier-officiel-APK-v${{ steps.version.outputs.version }}
@@ -169,7 +192,16 @@ jobs:
             Remplissage-papier-officiel-v${{ steps.version.outputs.version }}.apk.sha256
           if-no-files-found: error
 
+      - name: Upload Play bundle for internal testing
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Remplissage-PDF-Play-AAB-v${{ steps.version.outputs.version }}
+          path: app/build/outputs/bundle/playRelease/app-play-release.aab
+          if-no-files-found: error
+
       - name: Verify this is still the latest commit
+        if: github.event_name != 'pull_request'
         id: latest
         shell: bash
         run: |
