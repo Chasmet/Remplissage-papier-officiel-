@@ -22,7 +22,7 @@
         android:layout_marginTop="8dp"
         android:background="@drawable/bg_button_orange"
         android:backgroundTint="@null"
-        android:text="PDF  •  CHOISIR UN DOCUMENT OFFICIEL"
+        android:text="PDF  •  CHOISIR UN DOCUMENT"
         android:textColor="#FFFFFF"
         android:textStyle="bold" />
 
@@ -55,7 +55,7 @@
             android:layout_height="38dp"
             android:background="@drawable/bg_button_orange"
             android:backgroundTint="@null"
-            android:text="OUVRIR"
+            android:text="CHATGPT"
             android:textColor="#FFFFFF"
             android:textSize="9sp"
             android:textStyle="bold" />
@@ -67,7 +67,7 @@
             android:layout_marginStart="4dp"
             android:background="@drawable/bg_button_orange"
             android:backgroundTint="@null"
-            android:contentDescription="Relancer la synchronisation ChatGPT"
+            android:contentDescription="Envoyer ou synchroniser le PDF avec ChatGPT"
             android:text="↻"
             android:textColor="#FFFFFF"
             android:textSize="18sp"

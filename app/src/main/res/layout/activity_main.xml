@@ -19,7 +19,7 @@
             android:id="@+id/imgLogo"
             android:layout_width="176dp"
             android:layout_height="176dp"
-            android:contentDescription="Logo Remplissage papier officiel"
+            android:contentDescription="Logo Remplissage PDF"
             android:scaleType="fitCenter"
             android:src="@drawable/logo_app" />
 
@@ -28,7 +28,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:gravity="center"
-            android:text="REMPLISSAGE\nPAPIER OFFICIEL"
+            android:text="REMPLISSAGE\nPDF"
             android:textColor="#FFF1D7"
             android:textSize="29sp"
             android:textStyle="bold" />
@@ -97,7 +97,7 @@
                 android:background="@drawable/bg_card"
                 android:backgroundTint="@null"
                 android:gravity="center"
-                android:text="▣\nMES\nDOCUMENTS"
+                android:text="▣\nDERNIER\nDOCUMENT"
                 android:textColor="#FFE1A8"
                 android:textSize="16sp"
                 android:textStyle="bold" />
@@ -125,7 +125,7 @@
             android:layout_marginTop="16dp"
             android:background="@drawable/bg_button_dark"
             android:backgroundTint="@null"
-            android:text="⚙  RÉGLAGES &amp; MISES À JOUR"
+            android:text="⚙  RÉGLAGES"
             android:textColor="#FF8A3D"
             android:textSize="15sp"
             android:textStyle="bold" />
@@ -137,7 +137,7 @@
             android:background="@drawable/bg_card"
             android:gravity="center_vertical"
             android:padding="14dp"
-            android:text="✓  Documents et profil conservés localement sur le téléphone"
+            android:text="✓  Données locales ; l’envoi à ChatGPT se fait lors d’une synchronisation"
             android:textColor="#C9CDCF"
             android:textSize="13sp" />
 

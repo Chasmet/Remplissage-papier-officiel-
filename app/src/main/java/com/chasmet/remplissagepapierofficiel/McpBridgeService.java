@@ -45,7 +45,7 @@ public class McpBridgeService extends Service {
     private static final String CHANNEL_ID = "chatgpt_bridge";
     private static final int NOTIFICATION_ID = 1701;
     private static final String SETTINGS_PREFS = "settings";
-    private static final long POLL_SECONDS = 1L;
+    private static final long POLL_SECONDS = 3L;
 
     private final ScheduledExecutorService scheduler =
             Executors.newSingleThreadScheduledExecutor();
@@ -60,6 +60,7 @@ public class McpBridgeService extends Service {
         AppLog.write(this, "MCP_BRIDGE service démarré", null);
         createNotificationChannel();
         startForeground(NOTIFICATION_ID, buildNotification("Connexion à ChatGPT en cours…"));
+        LiveEditorPublisher.start(this);
         scheduler.scheduleWithFixedDelay(this::pollSafely,
                 0L, POLL_SECONDS, TimeUnit.SECONDS);
     }
@@ -72,11 +73,18 @@ public class McpBridgeService extends Service {
     }
 
     @Override
+    public void onTimeout(int startId, int fgsType) {
+        McpBridgeState.contactError(this, "Synchronisation interrompue par Android après la limite du service.");
+        stopSelf(startId);
+    }
+
+    @Override
     public void onDestroy() {
         stopped = true;
         McpBridgeState.setRunning(this, false);
         AppLog.write(this, "MCP_BRIDGE service arrêté", null);
         scheduler.shutdownNow();
+        LiveEditorPublisher.stop();
         busy.set(false);
         super.onDestroy();
     }
@@ -106,8 +114,10 @@ public class McpBridgeService extends Service {
         SharedPreferences settings = getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE);
         String endpoint = settings.getString("mcpUrl", "").trim();
         String token = settings.getString("mcpToken", "").trim();
-        if (endpoint.isEmpty()) {
+        if (endpoint.isEmpty() || token.length() < 32) {
             busy.set(false);
+            McpBridgeState.contactError(this, "Jeton MCP requis dans Réglages.");
+            stopSelf();
             return;
         }
 
