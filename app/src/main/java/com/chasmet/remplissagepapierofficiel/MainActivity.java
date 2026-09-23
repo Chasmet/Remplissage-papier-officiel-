@@ -213,12 +213,17 @@ public class MainActivity extends Activity {
             return;
         }
         File file = new File(directory, "document-" + System.currentTimeMillis() + ".pdf");
-        try (PdfDocument pdf = new PdfDocument()) {
-            PdfDocument.Page page = pdf.startPage(new PdfDocument.PageInfo.Builder(595, 842, 1).create());
-            page.getCanvas().drawColor(android.graphics.Color.WHITE);
-            pdf.finishPage(page);
-            try (FileOutputStream output = new FileOutputStream(file)) {
-                pdf.writeTo(output);
+        try {
+            PdfDocument pdf = new PdfDocument();
+            try {
+                PdfDocument.Page page = pdf.startPage(new PdfDocument.PageInfo.Builder(595, 842, 1).create());
+                page.getCanvas().drawColor(android.graphics.Color.WHITE);
+                pdf.finishPage(page);
+                try (FileOutputStream output = new FileOutputStream(file)) {
+                    pdf.writeTo(output);
+                }
+            } finally {
+                pdf.close();
             }
             Uri uri = FileProvider.getUriForFile(this,
                     BuildConfig.APPLICATION_ID + ".fileprovider", file);
